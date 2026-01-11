@@ -43,7 +43,7 @@ class DailyReportAgent(ConfigurableAgent):
 
         Args:
             today: Datum im Format YYYY-MM-DD
-            open_tasks: [{id, title, due_date, priority, project_name}, ...]
+            open_tasks: [{id, title, due_date, priority, project_name, person_name}, ...]
             overdue_tasks: [{id, title, due_date, days_overdue}, ...]
             todays_events: [{id, title, event_date, person_name}, ...]
             recently_completed: [{id, title, completed_at}, ...]
@@ -88,11 +88,13 @@ class DailyReportAgent(ConfigurableAgent):
         today = datetime.now().strftime("%Y-%m-%d")
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Open Tasks
+        # Open Tasks (inkl. person_name für Follow-up Tasks)
         open_tasks = self.db.execute("""
-            SELECT t.id, t.title, t.due_date, t.priority, p.name as project_name
+            SELECT t.id, t.title, t.due_date, t.priority, 
+                   p.name as project_name, pe.name as person_name
             FROM tasks t
             LEFT JOIN projects p ON t.project_id = p.id
+            LEFT JOIN people pe ON t.person_id = pe.id
             WHERE t.status = 'open'
             ORDER BY t.priority ASC, t.due_date ASC NULLS LAST
             LIMIT 20
@@ -128,10 +130,10 @@ class DailyReportAgent(ConfigurableAgent):
 
         return self.generate(
             today=today,
-            open_tasks=[dict(r) for r in open_tasks],
-            overdue_tasks=[dict(r) for r in overdue_tasks],
-            todays_events=[dict(r) for r in todays_events],
-            recently_completed=[dict(r) for r in recently_completed]
+            open_tasks=[dict(r) for r in open_tasks] if open_tasks else [],
+            overdue_tasks=[dict(r) for r in overdue_tasks] if overdue_tasks else [],
+            todays_events=[dict(r) for r in todays_events] if todays_events else [],
+            recently_completed=[dict(r) for r in recently_completed] if recently_completed else []
         )
 
 

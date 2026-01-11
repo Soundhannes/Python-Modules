@@ -415,7 +415,7 @@ class SecondBrainOrchestrator:
         
         # Timestamps hinzufügen
         insert_data["created_at"] = datetime.now()
-        if table not in ["ideas"]:  # ideas hat kein updated_at
+        if True:  # Alle Tabellen haben updated_at
             insert_data["updated_at"] = datetime.now()
 
         columns = ", ".join(insert_data.keys())
