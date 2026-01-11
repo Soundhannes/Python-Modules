@@ -45,18 +45,22 @@ class DatabaseWrapper:
         Returns:
             Liste von Dicts bei SELECT, None bei INSERT/UPDATE/DELETE
         """
-        with self._conn.get_cursor() as cursor:
-            cursor.execute(query, params)
+        try:
+            with self._conn.get_cursor() as cursor:
+                cursor.execute(query, params)
 
-            # Bei SELECT/RETURNING: Ergebnisse holen
-            if fetch and cursor.description:
-                results = cursor.fetchall()
+                # Bei SELECT/RETURNING: Ergebnisse holen
+                if fetch and cursor.description:
+                    results = cursor.fetchall()
+                    self._conn.commit()
+                    return [dict(row) for row in results]
+
+                # Bei INSERT/UPDATE/DELETE: Commit
                 self._conn.commit()
-                return [dict(row) for row in results]
-
-            # Bei INSERT/UPDATE/DELETE: Commit
-            self._conn.commit()
-            return None
+                return None
+        except Exception as e:
+            self._conn.rollback()
+            raise e
 
     def execute_one(
         self,
@@ -73,16 +77,20 @@ class DatabaseWrapper:
         Returns:
             Dict oder None
         """
-        with self._conn.get_cursor() as cursor:
-            cursor.execute(query, params)
+        try:
+            with self._conn.get_cursor() as cursor:
+                cursor.execute(query, params)
 
-            if cursor.description:
-                row = cursor.fetchone()
+                if cursor.description:
+                    row = cursor.fetchone()
+                    self._conn.commit()
+                    return dict(row) if row else None
+
                 self._conn.commit()
-                return dict(row) if row else None
-
-            self._conn.commit()
-            return None
+                return None
+        except Exception as e:
+            self._conn.rollback()
+            raise e
 
     def commit(self):
         """Speichert Änderungen."""
