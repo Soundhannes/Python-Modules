@@ -1,13 +1,10 @@
 """
 SecondBrainOrchestrator - Steuert den gesamten Verarbeitungsfluss.
 
-Flow:
-1. Text → Keyword-Extraktion
-2. Keywords → DB-Suche (Fuzzy Match)
-3. Matches → Intent-Agent
-4. Intent → Structure-Agent (nur bei create/update)
-5. Strukturierte Daten → Executor (DB-Operation)
-6. Ergebnis → Notification + Logging
+Flow mit Prefix-Weiche:
+- ? = Query → Fragen zu Daten beantworten
+- ! = Edit → Änderungen durchführen
+- kein Prefix = Create → Neuen Eintrag anlegen (alter Flow)
 """
 
 import sys
@@ -25,6 +22,9 @@ from agents.services.notification_service import get_notification_service
 from .configurable_agent import get_config_manager
 from .intent_agent import IntentAgent
 from .structure_agent import StructureAgent
+from .prefix_parser import parse_prefix, PrefixType
+from .query_handler import QueryHandler
+from .edit_handler import EditHandler
 
 
 class SecondBrainOrchestrator:
@@ -32,12 +32,10 @@ class SecondBrainOrchestrator:
     Hauptorchestrator für das Second Brain System.
 
     Koordiniert:
-    - Keyword-Extraktion und DB-Suche
-    - Intent-Erkennung
-    - Daten-Strukturierung
-    - DB-Operationen
-    - User-Interaktion (HumanInLoop)
-    - Benachrichtigungen
+    - Prefix-Weiche (?, !, default)
+    - Query-Handler für Fragen
+    - Edit-Handler für Änderungen
+    - Create-Flow für neue Einträge
     """
 
     TABLES = ['projects', 'tasks', 'people', 'ideas', 'events']
@@ -56,9 +54,13 @@ class SecondBrainOrchestrator:
         # Config Manager für Settings
         self.config = get_config_manager(db_connection)
 
-        # Agents
+        # Agents für Create-Flow
         self.intent_agent = IntentAgent(db_connection)
         self.structure_agent = StructureAgent(db_connection)
+
+        # Handler für Query/Edit
+        self.query_handler = QueryHandler(db_connection)
+        self.edit_handler = EditHandler(db_connection)
 
         # Services
         self.logger = get_logger("second_brain", tags=["inbox", "processing"])
@@ -81,66 +83,39 @@ class SecondBrainOrchestrator:
         self.completion_keywords = self.config.get_completion_keywords()
         self.deletion_keywords = self.config.get_deletion_keywords()
 
-    def process(self, text: str) -> Dict[str, Any]:
+    def process(self, text: str, confirmed: bool = False, pending_action: Dict = None) -> Dict[str, Any]:
         """
-        Haupteingang: Verarbeitet User-Text.
+        Haupteingang: Verarbeitet User-Text mit Prefix-Weiche.
+
+        Prefixes:
+        - ? = Query (Fragen stellen)
+        - ! = Edit (Änderungen)
+        - kein Prefix = Create (Standard)
 
         Args:
             text: Freitext-Eingabe vom User
+            confirmed: True wenn User eine Bestätigung gegeben hat
+            pending_action: Wartende Aktion bei Bestätigung
 
         Returns:
-            {
-                success: bool,
-                intent: str,
-                target: {table, id} oder None,
-                record_id: int (bei create),
-                message: str,
-                needs_clarification: bool (bei unclear)
-            }
+            Standardisiertes Ergebnis-Dict
         """
         self.logger.info(f"Eingang: {text[:100]}...")
 
+        # Prefix parsen
+        parsed = parse_prefix(text)
+        self.logger.debug(f"Prefix: {parsed.type}, Text: {parsed.text[:50]}...")
+
         try:
-            # 1. Keywords extrahieren
-            keywords = self._extract_keywords(text)
-            self.logger.debug(f"Keywords: {keywords}")
+            # Routing basierend auf Prefix
+            if parsed.type == PrefixType.QUERY:
+                return self._handle_query(parsed.text)
 
-            # 2. DB durchsuchen
-            matches = self._search_database(keywords)
-            self.logger.debug(f"Matches gefunden: {len(matches)}")
+            elif parsed.type == PrefixType.EDIT:
+                return self._handle_edit(parsed.text, confirmed, pending_action)
 
-            # 3. Intent erkennen
-            intent_result = self.intent_agent.analyze(text, matches)
-
-            if intent_result.get("error"):
-                self.logger.error(f"Intent-Agent Fehler: {intent_result.get('error_message')}")
-                return {
-                    "success": False,
-                    "error": intent_result.get("error_message"),
-                    "stage": "intent_recognition"
-                }
-
-            intent = intent_result.get("intent")
-            confidence = intent_result.get("confidence", 0)
-
-            self.logger.info(f"Intent: {intent}, Confidence: {confidence}")
-
-            # 4. Bei niedriger Confidence oder unclear: User fragen
-            if confidence < self.confidence_threshold or intent == "unclear":
-                return self._handle_unclear(text, intent_result)
-
-            # 5. Intent ausführen
-            if intent in ["complete", "delete"]:
-                return self._execute_simple(text, intent_result)
-
-            if intent in ["create", "update"]:
-                return self._execute_with_structure(text, intent_result)
-
-            return {
-                "success": False,
-                "error": f"Unknown intent: {intent}",
-                "stage": "execution"
-            }
+            else:  # CREATE (Standard)
+                return self._handle_create(parsed.text)
 
         except Exception as e:
             self.logger.error(f"Orchestrator Fehler: {str(e)}")
@@ -150,28 +125,116 @@ class SecondBrainOrchestrator:
                 "stage": "unknown"
             }
 
+    def _handle_query(self, text: str) -> Dict[str, Any]:
+        """Verarbeitet Query (? Prefix)."""
+        self.logger.info(f"Query: {text[:50]}...")
+
+        result = self.query_handler.handle(text)
+
+        return {
+            "success": result.success,
+            "intent": "query",
+            "message": result.answer,
+            "data": result.data,
+            "error": result.error,
+            "action": {"type": "query"}
+        }
+
+    def _handle_edit(self, text: str, confirmed: bool, pending_action: Dict) -> Dict[str, Any]:
+        """Verarbeitet Edit (! Prefix)."""
+        self.logger.info(f"Edit: {text[:50]}... (confirmed={confirmed})")
+
+        result = self.edit_handler.handle(text, confirmed, pending_action)
+
+        if result.needs_confirmation:
+            return {
+                "success": True,
+                "intent": "edit",
+                "needs_clarification": True,
+                "question": result.confirmation_question,
+                "options": [
+                    {"label": "Ja", "value": "confirm"},
+                    {"label": "Nein", "value": "cancel"}
+                ],
+                "pending_action": result.pending_action,
+                "action": {"type": "edit_pending"}
+            }
+
+        # Notification senden bei Erfolg
+        if result.success and self.notifier and self.telegram_chat_id:
+            self.notifier.send_telegram(
+                chat_id=self.telegram_chat_id,
+                message=f"✏️ {result.message}",
+                message_type="success"
+            )
+
+        return {
+            "success": result.success,
+            "intent": "edit",
+            "message": result.message,
+            "error": result.error,
+            "action": {"type": "edit"}
+        }
+
+    def _handle_create(self, text: str) -> Dict[str, Any]:
+        """Verarbeitet Create (kein Prefix) - bestehende Logik."""
+        # 1. Keywords extrahieren
+        keywords = self._extract_keywords(text)
+        self.logger.debug(f"Keywords: {keywords}")
+
+        # 2. DB durchsuchen
+        matches = self._search_database(keywords)
+        self.logger.debug(f"Matches gefunden: {len(matches)}")
+
+        # 3. Intent erkennen
+        intent_result = self.intent_agent.analyze(text, matches)
+
+        if intent_result.get("error"):
+            self.logger.error(f"Intent-Agent Fehler: {intent_result.get('error_message')}")
+            return {
+                "success": False,
+                "error": intent_result.get("error_message"),
+                "stage": "intent_recognition"
+            }
+
+        intent = intent_result.get("intent")
+        confidence = intent_result.get("confidence", 0)
+
+        self.logger.info(f"Intent: {intent}, Confidence: {confidence}")
+
+        # 4. Bei niedriger Confidence oder unclear: User fragen
+        if confidence < self.confidence_threshold or intent == "unclear":
+            return self._handle_unclear(text, intent_result)
+
+        # 5. Intent ausführen
+        if intent in ["complete", "delete"]:
+            return self._execute_simple(text, intent_result)
+
+        if intent in ["create", "update"]:
+            return self._execute_with_structure(text, intent_result)
+
+        return {
+            "success": False,
+            "error": f"Unknown intent: {intent}",
+            "stage": "execution"
+        }
+
+    # ===== Bestehende Helper-Methoden =====
+
     def _extract_keywords(self, text: str) -> List[str]:
         """Extrahiert Keywords aus Text."""
-        # Lowercase, Sonderzeichen entfernen (außer Umlaute)
         cleaned = re.sub(r'[^\w\säöüÄÖÜß]', ' ', text.lower())
-
-        # In Wörter splitten
         words = cleaned.split()
-
-        # Stopwords und zu kurze Wörter filtern
         keywords = [
             w for w in words
             if w not in self.stopwords and len(w) >= self.keyword_min_length
         ]
-
-        # Deduplizieren, Reihenfolge beibehalten
         seen = set()
         unique = []
         for kw in keywords:
             if kw not in seen:
                 seen.add(kw)
                 unique.append(kw)
-
         return unique
 
     def _search_database(self, keywords: List[str]) -> List[Dict]:
@@ -179,7 +242,6 @@ class SecondBrainOrchestrator:
         matches = []
 
         for table in self.TABLES:
-            # Dynamisch die richtige Spalte wählen
             name_col = "title" if table in ["tasks", "events"] else "name"
             notes_col = "notes" if table != "people" else "context"
 
@@ -198,7 +260,6 @@ class SecondBrainOrchestrator:
                        OR LOWER(COALESCE({notes_col}, '')) LIKE %s
                     LIMIT 5
                 """
-
                 pattern = f"%{keyword}%"
 
                 try:
@@ -206,21 +267,16 @@ class SecondBrainOrchestrator:
                         query,
                         (keyword, pattern, pattern, pattern, pattern)
                     )
-
                     for row in results:
                         matches.append({
                             "table": table,
                             "id": row["id"],
-                            "data": {
-                                "name": row["name"],
-                                "notes": row["notes"]
-                            },
+                            "data": {"name": row["name"], "notes": row["notes"]},
                             "match_score": float(row["match_score"])
                         })
                 except Exception as e:
                     self.logger.warning(f"DB-Suche in {table} fehlgeschlagen: {e}")
 
-        # Deduplizieren und sortieren
         seen = set()
         unique = []
         for m in sorted(matches, key=lambda x: -x["match_score"]):
@@ -239,16 +295,13 @@ class SecondBrainOrchestrator:
         self.logger.info(f"Unclear Intent, frage User: {question}")
 
         if options:
-            # User wählen lassen
             choice_options = [f"{o.get('label', o.get('table'))} ({o.get('table')})" for o in options]
-
             request_id = self.human_loop.request_choice(
                 question=question,
                 options=choice_options,
                 timeout_seconds=3600
             )
 
-            # Notification senden
             if self.notifier and self.telegram_chat_id:
                 options_text = "\n".join([f"- {opt}" for opt in choice_options])
                 self.notifier.send_telegram(
@@ -287,7 +340,6 @@ class SecondBrainOrchestrator:
 
         try:
             if intent == "complete":
-                # Status auf done setzen
                 query = f"""
                     UPDATE {table}
                     SET status = 'done', updated_at = NOW()
@@ -298,15 +350,12 @@ class SecondBrainOrchestrator:
                 action = "abgeschlossen"
 
             elif intent == "delete":
-                # Soft-delete wäre besser, aber hier hard-delete
                 query = f"DELETE FROM {table} WHERE id = %s RETURNING id"
                 result = self.db.execute(query, (record_id,))
                 action = "gelöscht"
 
-            # inbox_log schreiben
             self._write_inbox_log(text, intent_result, record_id)
 
-            # Notification senden
             message = f"✅ {table.capitalize()} #{record_id} {action}"
             if self.notifier and self.telegram_chat_id:
                 self.notifier.send_telegram(
@@ -321,7 +370,8 @@ class SecondBrainOrchestrator:
                 "success": True,
                 "intent": intent,
                 "target": target,
-                "message": message
+                "message": message,
+                "action": {"type": intent, "category": table, "id": record_id}
             }
 
         except Exception as e:
@@ -339,7 +389,6 @@ class SecondBrainOrchestrator:
         category = intent_result.get("category")
         target = intent_result.get("target") or {}
 
-        # Structure-Agent aufrufen
         structured = self.structure_agent.structure(
             text=text,
             intent=intent,
@@ -358,28 +407,21 @@ class SecondBrainOrchestrator:
         try:
             if intent == "create":
                 record_id = self._insert_record(category, structured.get("data", {}))
-
-                # Linked Entities verarbeiten
                 linked = structured.get("linked_entities", {})
                 if linked:
                     self._process_linked_entities(record_id, category, linked)
-
                 message = f"✅ Neuer Eintrag in {category}: #{record_id}"
 
             elif intent == "update":
                 table = target.get("table")
                 record_id = target.get("id")
                 changes = structured.get("changes", {})
-
                 if changes:
                     self._update_record(table, record_id, changes)
-
                 message = f"✅ {table.capitalize()} #{record_id} aktualisiert"
 
-            # inbox_log schreiben
             self._write_inbox_log(text, intent_result, record_id, structured)
 
-            # Notification senden
             if self.notifier and self.telegram_chat_id:
                 self.notifier.send_telegram(
                     chat_id=self.telegram_chat_id,
@@ -392,9 +434,8 @@ class SecondBrainOrchestrator:
             return {
                 "success": True,
                 "intent": intent,
-                "record_id": record_id,
-                "category": category,
-                "message": message
+                "message": message,
+                "action": {"type": intent, "category": category, "id": record_id}
             }
 
         except Exception as e:
@@ -410,13 +451,9 @@ class SecondBrainOrchestrator:
         if not data:
             raise ValueError("Keine Daten zum Einfügen")
 
-        # Kopie machen um Original nicht zu verändern
         insert_data = dict(data)
-        
-        # Timestamps hinzufügen
         insert_data["created_at"] = datetime.now()
-        if True:  # Alle Tabellen haben updated_at
-            insert_data["updated_at"] = datetime.now()
+        insert_data["updated_at"] = datetime.now()
 
         columns = ", ".join(insert_data.keys())
         placeholders = ", ".join(["%s"] * len(insert_data))
@@ -432,10 +469,8 @@ class SecondBrainOrchestrator:
             return
 
         changes["updated_at"] = datetime.now()
-
         set_clause = ", ".join([f"{k} = %s" for k in changes.keys()])
         query = f"UPDATE {table} SET {set_clause} WHERE id = %s"
-
         self.db.execute(query, (*changes.values(), record_id))
 
     def _process_linked_entities(self, record_id: int, table: str, linked: Dict):
@@ -444,7 +479,6 @@ class SecondBrainOrchestrator:
         project_name = linked.get("project_name")
 
         if person_name and table in ["tasks", "events"]:
-            # Person suchen oder anlegen
             person = self.db.execute(
                 "SELECT id FROM people WHERE LOWER(name) = LOWER(%s)",
                 (person_name,)
@@ -453,7 +487,6 @@ class SecondBrainOrchestrator:
             if person:
                 person_id = person[0]["id"]
             else:
-                # Neue Person anlegen
                 result = self.db.execute(
                     "INSERT INTO people (name, created_at, updated_at) VALUES (%s, NOW(), NOW()) RETURNING id",
                     (person_name,)
@@ -461,14 +494,12 @@ class SecondBrainOrchestrator:
                 person_id = result[0]["id"]
                 self.logger.info(f"Neue Person angelegt: {person_name} (#{person_id})")
 
-            # Verknüpfung setzen
             self.db.execute(
                 f"UPDATE {table} SET person_id = %s WHERE id = %s",
                 (person_id, record_id)
             )
 
         if project_name and table in ["tasks", "events"]:
-            # Projekt suchen
             project = self.db.execute(
                 "SELECT id FROM projects WHERE LOWER(name) LIKE LOWER(%s)",
                 (f"%{project_name}%",)
@@ -490,14 +521,13 @@ class SecondBrainOrchestrator:
     ):
         """Schreibt Audit-Log in inbox_log."""
         target = intent_result.get("target") or {}
+        confidence = intent_result.get("confidence", 0)
 
         query = """
             INSERT INTO inbox_log
             (captured_text, intent, target_table, target_id, changes, confidence, needs_review, created_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
         """
-
-        confidence = intent_result.get("confidence", 0)
 
         self.db.execute(query, (
             text,
@@ -510,17 +540,7 @@ class SecondBrainOrchestrator:
         ))
 
     def respond_to_clarification(self, request_id: str, choice: str) -> Dict:
-        """
-        Verarbeitet User-Antwort auf Rückfrage.
-
-        Args:
-            request_id: ID der HumanInLoop-Anfrage
-            choice: Gewählte Option
-
-        Returns:
-            Ergebnis der fortgesetzten Verarbeitung
-        """
-        # Anfrage aus human_requests laden
+        """Verarbeitet User-Antwort auf Rückfrage."""
         request = self.db.execute(
             "SELECT context FROM human_requests WHERE id = %s",
             (request_id,)
@@ -531,9 +551,6 @@ class SecondBrainOrchestrator:
 
         context = request[0].get("context", {})
         original_text = context.get("text", "")
-
-        # Mit der Auswahl neu verarbeiten
-        # TODO: Implementierung abhängig von Use-Case
 
         return {"success": True, "message": "Verarbeitung fortgesetzt"}
 
