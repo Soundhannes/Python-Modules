@@ -43,7 +43,7 @@ class DailyReportAgent(ConfigurableAgent):
 
         Args:
             today: Datum im Format YYYY-MM-DD
-            open_tasks: [{id, title, due_date, priority, project_name, person_name}, ...]
+            open_tasks: [{id, title, due_date, priority, project_name, person_name, status}, ...]
             overdue_tasks: [{id, title, due_date, days_overdue}, ...]
             todays_events: [{id, title, event_date, person_name}, ...]
             recently_completed: [{id, title, completed_at}, ...]
@@ -88,24 +88,24 @@ class DailyReportAgent(ConfigurableAgent):
         today = datetime.now().strftime("%Y-%m-%d")
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Open Tasks (inkl. person_name für Follow-up Tasks)
+        # Open Tasks (GTD: next und waiting, sortiert nach Priorität)
         open_tasks = self.db.execute("""
-            SELECT t.id, t.title, t.due_date, t.priority, 
+            SELECT t.id, t.title, t.due_date, t.priority, t.status,
                    p.name as project_name, pe.name as person_name
             FROM tasks t
             LEFT JOIN projects p ON t.project_id = p.id
             LEFT JOIN people pe ON t.person_id = pe.id
-            WHERE t.status = 'open'
+            WHERE t.status IN ('next', 'waiting')
             ORDER BY t.priority ASC, t.due_date ASC NULLS LAST
             LIMIT 20
         """)
 
-        # Overdue Tasks
+        # Overdue Tasks (alle nicht-done)
         overdue_tasks = self.db.execute("""
-            SELECT id, title, due_date,
+            SELECT id, title, due_date, status,
                    EXTRACT(DAY FROM NOW() - due_date)::int as days_overdue
             FROM tasks
-            WHERE status = 'open' AND due_date < CURRENT_DATE
+            WHERE status NOT IN ('done', 'someday') AND due_date < CURRENT_DATE
             ORDER BY due_date ASC
             LIMIT 10
         """)
