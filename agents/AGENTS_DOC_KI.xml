@@ -1,0 +1,1120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Agent Framework Dokumentation - KI Version
+  Strukturierte Referenz für maschinelle Verarbeitung
+  Erstellt: 2026-01-10
+-->
+<agent-framework version="1.0">
+  <metadata>
+    <name>Python-Blocks Agent Framework</name>
+    <description>Wiederverwendbare Bausteine für LLM-Automationen</description>
+    <location>/opt/python-modules/agents/</location>
+    <import>from agents import BaseAgent, BaseOrchestrator</import>
+  </metadata>
+
+  <!-- ============================================================ -->
+  <!-- CORE KOMPONENTEN -->
+  <!-- ============================================================ -->
+
+  <component name="BaseAgent" category="core" file="core/base_agent.py">
+    <yaml-config><![CDATA[
+name: BaseAgent
+purpose: LLM-Aufrufe mit Template-Support und JSON-Parsing
+import: from agents import BaseAgent, AgentResult
+
+constructor:
+  name:
+    type: str
+    default: "agent"
+    description: Name des Agents für Logging/Tracking
+  provider:
+    type: str
+    default: "anthropic"
+    options: ["anthropic", "openai", "google"]
+    description: LLM-Provider
+  model:
+    type: str
+    optional: true
+    description: Spezifisches Modell (z.B. claude-sonnet-4-20250514)
+  tools:
+    type: List[ToolDefinition]
+    optional: true
+    description: Tool-Definitionen für Function Calling (Placeholder)
+  default_max_tokens:
+    type: int
+    default: 2048
+  default_temperature:
+    type: float
+    default: 0.7
+
+methods:
+  run:
+    parameters:
+      user_prompt:
+        type: str
+        required: true
+        description: User-Nachricht, kann {variable} Templates enthalten
+      system_prompt:
+        type: str
+        optional: true
+        description: System-Anweisung für das LLM
+      context:
+        type: Dict[str, Any]
+        optional: true
+        description: Variablen für Template-Rendering
+      history:
+        type: List[Dict[str, str]]
+        optional: true
+        description: Chat-Verlauf [{role, content}, ...]
+      max_tokens:
+        type: int
+        optional: true
+        description: Überschreibt default_max_tokens
+      temperature:
+        type: float
+        optional: true
+        description: Überschreibt default_temperature (0-1)
+      expect_json:
+        type: bool
+        default: false
+        description: Fügt JSON-Anweisung zum Prompt hinzu
+      use_tools:
+        type: bool
+        default: false
+        description: Aktiviert Tool-Calling (noch nicht implementiert)
+    returns:
+      type: AgentResult
+      fields:
+        agent_name: str
+        response: str
+        structured: Optional[Dict]
+        tool_calls: List[ToolCall]
+        tokens_used: int
+        model: str
+        provider: str
+        success: bool
+        error: Optional[str]
+        duration_ms: int
+        timestamp: datetime
+
+  run_with_retry:
+    parameters:
+      user_prompt: str
+      max_retries:
+        type: int
+        default: 3
+      kwargs: Alle Parameter von run()
+    returns: AgentResult
+
+  add_tool:
+    parameters:
+      tool: ToolDefinition
+    description: Fügt Tool hinzu (Placeholder für Function Calling)
+]]></yaml-config>
+
+    <example><![CDATA[
+agent = BaseAgent("analyst", provider="anthropic", model="claude-sonnet-4-20250514")
+result = agent.run(
+    user_prompt="Analysiere: {data}",
+    system_prompt="Du bist ein Datenanalyst.",
+    context={"data": "Verkaufszahlen Q4"},
+    max_tokens=1000
+)
+if result.success:
+    print(result.response)
+]]></example>
+  </component>
+
+  <component name="BaseOrchestrator" category="core" file="core/base_orchestrator.py">
+    <yaml-config><![CDATA[
+name: BaseOrchestrator
+purpose: Workflow-Steuerung für mehrstufige Automationen
+import: from agents import BaseOrchestrator, StepResult, OrchestrationResult
+
+constructor:
+  name:
+    type: str
+    default: "orchestrator"
+    description: Name für Logging/Tracking
+  max_workers:
+    type: int
+    default: 4
+    description: Parallele Worker für run_parallel
+
+methods:
+  run_sequence:
+    description: Führt Schritte nacheinander aus
+    parameters:
+      steps:
+        type: List[Union[Callable, Tuple[str, Callable]]]
+        description: Liste von Funktionen oder (name, function) Tuples
+      initial_context:
+        type: Dict[str, Any]
+        optional: true
+        description: Startkontext
+      stop_on_error:
+        type: bool
+        default: true
+        description: Bei Fehler abbrechen
+      update_context:
+        type: bool
+        default: true
+        description: Ergebnisse in Kontext übernehmen
+    returns:
+      type: OrchestrationResult
+      fields:
+        orchestrator_name: str
+        success: bool
+        steps: List[StepResult]
+        final_context: Dict[str, Any]
+        total_duration_ms: int
+        error: Optional[str]
+
+  run_parallel:
+    description: Führt Schritte gleichzeitig aus
+    parameters:
+      steps: List[Union[Callable, Tuple[str, Callable]]]
+      context: Dict[str, Any]
+      timeout: Optional[float]
+    returns: OrchestrationResult
+
+  run_condition:
+    description: If/Else Verzweigung
+    parameters:
+      check:
+        type: Callable[[Dict], bool]
+        description: Bedingungsfunktion
+      if_true: Callable
+      if_false: Callable
+      context: Dict[str, Any]
+    returns: OrchestrationResult
+
+  run_loop:
+    description: Wiederholung bis Bedingung erfüllt
+    parameters:
+      step: Callable
+      until:
+        type: Callable[[Dict], bool]
+        description: Abbruchbedingung
+      context: Dict[str, Any]
+      max_iterations:
+        type: int
+        default: 100
+      step_name:
+        type: str
+        default: "loop_step"
+    returns: OrchestrationResult
+
+  run_retry:
+    description: Wiederholung bei Fehler mit Backoff
+    parameters:
+      step: Callable
+      max_retries:
+        type: int
+        default: 3
+      context: Dict[str, Any]
+      delay_seconds:
+        type: float
+        default: 1.0
+      backoff_multiplier:
+        type: float
+        default: 2.0
+      step_name:
+        type: str
+        default: "retry_step"
+    returns: OrchestrationResult
+
+step_function_contract:
+  input: context (Dict[str, Any])
+  output: Any (wird als result in StepResult gespeichert)
+  error_handling: Exception werfen bei Fehler
+]]></yaml-config>
+
+    <example><![CDATA[
+orchestrator = BaseOrchestrator("data_pipeline")
+
+def load_data(ctx):
+    return {"data": [1, 2, 3, 4, 5]}
+
+def process_data(ctx):
+    data = ctx["load"]["data"]
+    return {"sum": sum(data), "count": len(data)}
+
+def save_result(ctx):
+    return {"saved": True}
+
+result = orchestrator.run_sequence([
+    ("load", load_data),
+    ("process", process_data),
+    ("save", save_result)
+])
+
+print(f"Erfolg: {result.success}")
+print(f"Summe: {result.final_context['process']['sum']}")
+]]></example>
+  </component>
+
+  <!-- ============================================================ -->
+  <!-- SERVICES -->
+  <!-- ============================================================ -->
+
+  <component name="StorageService" category="services" file="services/storage_service.py">
+    <yaml-config><![CDATA[
+name: StorageService
+purpose: Key-Value Speicher mit Namespace-Isolation und TTL
+import: from agents.services import StorageService, get_storage_service
+
+constructor:
+  namespace:
+    type: str
+    default: "default"
+    description: Standard-Namespace für alle Operationen
+
+methods:
+  set:
+    description: Speichert einen Wert
+    parameters:
+      key:
+        type: str
+        required: true
+      value:
+        type: Any
+        required: true
+        description: Wird als JSON gespeichert
+      namespace:
+        type: str
+        optional: true
+        description: Überschreibt self.namespace
+      ttl:
+        type: int
+        optional: true
+        description: Time-to-Live in Sekunden
+    returns: bool
+
+  get:
+    description: Holt einen Wert
+    parameters:
+      key: str
+      namespace: Optional[str]
+      default:
+        type: Any
+        default: null
+    returns: Any
+
+  get_item:
+    description: Holt Wert mit Metadaten
+    parameters:
+      key: str
+      namespace: Optional[str]
+    returns:
+      type: Optional[StorageItem]
+      fields:
+        key: str
+        value: Any
+        namespace: str
+        created_at: datetime
+        updated_at: datetime
+        expires_at: Optional[datetime]
+
+  delete:
+    parameters:
+      key: str
+      namespace: Optional[str]
+    returns: bool
+
+  exists:
+    parameters:
+      key: str
+      namespace: Optional[str]
+    returns: bool
+
+  list_keys:
+    parameters:
+      namespace: Optional[str]
+      prefix:
+        type: str
+        optional: true
+        description: Filter Keys die mit prefix beginnen
+    returns: List[str]
+
+  get_all:
+    description: Holt alle Einträge als Dict
+    parameters:
+      namespace: Optional[str]
+      prefix: Optional[str]
+    returns: Dict[str, Any]
+
+  set_many:
+    description: Bulk-Insert
+    parameters:
+      items: Dict[str, Any]
+      namespace: Optional[str]
+      ttl: Optional[int]
+    returns: int (Anzahl gespeichert)
+
+  delete_namespace:
+    description: Löscht alle Einträge eines Namespaces
+    parameters:
+      namespace: Optional[str]
+    returns: int (Anzahl gelöscht)
+
+  cleanup_expired:
+    description: Löscht abgelaufene Einträge
+    returns: int
+
+factory:
+  function: get_storage_service(namespace)
+  caching: Instanzen werden pro Namespace gecacht
+]]></yaml-config>
+
+    <example><![CDATA[
+storage = StorageService(namespace="my_automation")
+
+# Einfacher Wert
+storage.set("config", {"api_key": "...", "timeout": 30})
+config = storage.get("config")
+
+# Mit TTL (1 Stunde)
+storage.set("temp_token", "abc123", ttl=3600)
+
+# Bulk-Operationen
+storage.set_many({
+    "user_1": {"name": "Alice"},
+    "user_2": {"name": "Bob"}
+})
+all_users = storage.get_all(prefix="user_")
+]]></example>
+  </component>
+
+  <component name="NotificationService" category="services" file="services/notification_service.py">
+    <yaml-config><![CDATA[
+name: NotificationService
+purpose: Benachrichtigungen über Telegram und Webhook
+import: from agents.services.notification_service import NotificationService, get_notification_service
+
+constructor:
+  automation:
+    type: str
+    default: "default"
+    description: Name für Tracking
+
+methods:
+  set_config:
+    description: Speichert Kanal-Konfiguration
+    parameters:
+      channel:
+        type: str
+        options: ["telegram", "webhook"]
+      config:
+        type: Dict[str, Any]
+        telegram_config:
+          bot_token: str
+          default_chat_id: str
+        webhook_config:
+          url: str
+          headers: Optional[Dict[str, str]]
+      enabled:
+        type: bool
+        default: true
+    returns: bool
+
+  get_config:
+    parameters:
+      channel: str
+    returns: Optional[Dict[str, Any]]
+
+  delete_config:
+    parameters:
+      channel: str
+    returns: bool
+
+  list_channels:
+    returns: List[Dict[str, Any]]
+
+  send_telegram:
+    parameters:
+      message: str
+      chat_id:
+        type: str
+        optional: true
+        description: Überschreibt default_chat_id
+    returns:
+      type: NotificationResult
+      fields:
+        automation: str
+        success: bool
+        channel: str
+        message: str
+        error: Optional[str]
+        timestamp: datetime
+
+  send_webhook:
+    parameters:
+      url:
+        type: str
+        optional: true
+        description: Überschreibt Config-URL
+      payload:
+        type: Dict[str, Any]
+        optional: true
+      message:
+        type: str
+        optional: true
+    returns: NotificationResult
+
+  notify:
+    description: Sendet an mehrere Kanäle
+    parameters:
+      message: str
+      channels:
+        type: List[str]
+        optional: true
+        description: Default = alle aktivierten
+    returns: Dict[str, NotificationResult]
+
+factory:
+  function: get_notification_service(automation)
+  caching: Instanzen werden pro Automation gecacht
+]]></yaml-config>
+
+    <example><![CDATA[
+notifier = NotificationService("my_workflow")
+
+# Telegram konfigurieren
+notifier.set_config("telegram", {
+    "bot_token": "123456:ABC...",
+    "default_chat_id": "-100123456789"
+})
+
+# Nachricht senden
+result = notifier.send_telegram("Workflow abgeschlossen!")
+
+# An alle aktiven Kanäle senden
+results = notifier.notify("Status-Update")
+]]></example>
+  </component>
+
+  <!-- ============================================================ -->
+  <!-- UTILS -->
+  <!-- ============================================================ -->
+
+  <component name="Logger" category="utils" file="utils/logger.py">
+    <yaml-config><![CDATA[
+name: Logger
+purpose: Strukturiertes Logging in PostgreSQL mit Tags
+import: from agents.utils import Logger, LogLevel, get_logger
+
+constructor:
+  automation:
+    type: str
+    default: "default"
+    description: Name der Automation
+  tags:
+    type: List[str]
+    optional: true
+    description: Standard-Tags für alle Logs
+  min_level:
+    type: LogLevel
+    default: LogLevel.DEBUG
+    options: [DEBUG, INFO, WARNING, ERROR, CRITICAL]
+
+methods:
+  debug:
+    parameters:
+      message: str
+      data:
+        type: Dict[str, Any]
+        optional: true
+      tags:
+        type: List[str]
+        optional: true
+        description: Zusätzliche Tags für diesen Log
+
+  info:
+    parameters:
+      message: str
+      data: Optional[Dict[str, Any]]
+      tags: Optional[List[str]]
+
+  warning:
+    parameters:
+      message: str
+      data: Optional[Dict[str, Any]]
+      tags: Optional[List[str]]
+
+  error:
+    parameters:
+      message: str
+      data: Optional[Dict[str, Any]]
+      tags: Optional[List[str]]
+
+  critical:
+    parameters:
+      message: str
+      data: Optional[Dict[str, Any]]
+      tags: Optional[List[str]]
+
+  get_logs:
+    description: Holt Logs mit Filterung
+    parameters:
+      limit:
+        type: int
+        default: 100
+      level:
+        type: LogLevel
+        optional: true
+      since:
+        type: datetime
+        optional: true
+      tags:
+        type: List[str]
+        optional: true
+        description: Alle angegebenen Tags müssen vorhanden sein
+    returns:
+      type: List[LogEntry]
+      fields:
+        id: int
+        automation: str
+        level: str
+        message: str
+        data: Optional[Dict]
+        tags: List[str]
+        timestamp: datetime
+
+  clear_logs:
+    parameters:
+      older_than_days:
+        type: int
+        default: 30
+    returns: int
+
+  clear_all:
+    returns: int
+
+factory:
+  function: get_logger(automation, tags)
+]]></yaml-config>
+
+    <example><![CDATA[
+logger = Logger("data_pipeline", tags=["production", "daily"])
+
+logger.info("Pipeline gestartet")
+logger.debug("Daten geladen", {"count": 1000}, tags=["verbose"])
+logger.error("Verarbeitung fehlgeschlagen", {"error": "Timeout"})
+
+# Logs abrufen
+errors = logger.get_logs(level=LogLevel.ERROR, limit=10)
+tagged_logs = logger.get_logs(tags=["verbose"])
+]]></example>
+  </component>
+
+  <component name="Validator" category="utils" file="utils/validator.py">
+    <yaml-config><![CDATA[
+name: Validator
+purpose: Schema-Validierung mit Typ-Konvertierung
+import: from agents.utils import Validator, ValidationResult
+
+constructor:
+  keine Parameter
+
+schema_optionen:
+  type:
+    description: Python-Typ (str, int, float, bool, list, dict)
+  required:
+    type: bool
+    default: false
+  default:
+    description: Standardwert wenn nicht vorhanden
+  min:
+    description: Minimum (Zahl) oder Mindestlänge (String/Liste)
+  max:
+    description: Maximum (Zahl) oder Maximallänge (String/Liste)
+  pattern:
+    type: str
+    description: Regex-Pattern für Strings
+  choices:
+    type: List
+    description: Erlaubte Werte
+  custom:
+    type: str
+    description: Name eines registrierten Custom-Validators
+
+methods:
+  validate:
+    parameters:
+      data: Dict[str, Any]
+      schema: Dict[str, Dict]
+    returns:
+      type: ValidationResult
+      fields:
+        valid: bool
+        errors: List[str]
+        data: Any (validierte/transformierte Daten)
+
+  is_valid:
+    description: Kurzform - nur bool zurück
+    parameters:
+      data: Dict[str, Any]
+      schema: Dict[str, Dict]
+    returns: bool
+
+  register_validator:
+    description: Custom Validator registrieren
+    parameters:
+      name: str
+      func:
+        type: Callable[[Any], bool]
+        description: Funktion die True/False zurückgibt
+
+  validate_email:
+    parameters:
+      value: str
+    returns: bool
+
+  validate_url:
+    parameters:
+      value: str
+    returns: bool
+
+  validate_type:
+    parameters:
+      value: Any
+      expected_type: type
+    returns: bool
+
+  validate_not_empty:
+    parameters:
+      value: Any
+    returns: bool
+]]></yaml-config>
+
+    <example><![CDATA[
+validator = Validator()
+
+schema = {
+    "name": {"type": str, "required": True, "min": 2, "max": 100},
+    "email": {"type": str, "required": True, "custom": "email"},
+    "age": {"type": int, "min": 0, "max": 150},
+    "status": {"type": str, "choices": ["active", "inactive"], "default": "active"}
+}
+
+# Custom Validator registrieren
+validator.register_validator("email", validator.validate_email)
+
+result = validator.validate({"name": "Max", "email": "max@example.com"}, schema)
+if result.valid:
+    print(result.data)
+else:
+    print(result.errors)
+]]></example>
+  </component>
+
+  <component name="HumanInLoop" category="utils" file="utils/human_in_loop.py">
+    <yaml-config><![CDATA[
+name: HumanInLoop
+purpose: Menschliche Bestätigungen und Eingaben in Workflows
+import: from agents.utils import HumanInLoop, HumanRequest, get_human_in_loop
+
+constructor:
+  automation:
+    type: str
+    default: "default"
+
+methods:
+  request_approval:
+    description: Ja/Nein Bestätigung anfordern
+    parameters:
+      question: str
+      timeout:
+        type: int
+        default: 300
+        description: Timeout in Sekunden
+    returns: bool
+    behavior: Blockiert bis Antwort oder Timeout
+
+  request_choice:
+    description: Auswahl aus Optionen anfordern
+    parameters:
+      question: str
+      options: List[str]
+      timeout:
+        type: int
+        default: 300
+    returns: Optional[str]
+    behavior: Gibt gewählte Option oder None bei Timeout
+
+  request_input:
+    description: Freitexteingabe anfordern
+    parameters:
+      question: str
+      timeout:
+        type: int
+        default: 300
+    returns: Optional[str]
+
+  get_pending_requests:
+    description: Offene Anfragen für externe Verarbeitung
+    returns:
+      type: List[HumanRequest]
+      fields:
+        id: int
+        automation: str
+        request_type: str (approval, choice, input)
+        question: str
+        options: Optional[List[str]]
+        status: str (pending, responded, expired)
+        response: Optional[str]
+        approved: Optional[bool]
+        created_at: datetime
+        expires_at: datetime
+
+  respond:
+    description: Anfrage beantworten (für externe UI)
+    parameters:
+      request_id: int
+      response: str
+      approved:
+        type: bool
+        optional: true
+        description: Nur für approval-Requests
+    returns: bool
+
+  cancel_request:
+    parameters:
+      request_id: int
+    returns: bool
+
+factory:
+  function: get_human_in_loop(automation)
+]]></yaml-config>
+
+    <example><![CDATA[
+human = HumanInLoop("critical_workflow")
+
+# Bestätigung anfordern
+if human.request_approval("Soll die Datenbank überschrieben werden?"):
+    print("Bestätigt - führe aus")
+else:
+    print("Abgelehnt oder Timeout")
+
+# Auswahl anfordern
+choice = human.request_choice(
+    "Welches Format?",
+    options=["JSON", "CSV", "XML"]
+)
+if choice:
+    print(f"Gewählt: {choice}")
+
+# Für externe UI: Offene Anfragen abrufen
+pending = human.get_pending_requests()
+for req in pending:
+    # In UI anzeigen, dann:
+    human.respond(req.id, "JSON", approved=True)
+]]></example>
+  </component>
+
+  <component name="InputCollector" category="utils" file="utils/input_collector.py">
+    <yaml-config><![CDATA[
+name: InputCollector
+purpose: Formular-basierte Dateneingabe
+import: from agents.utils import InputCollector, FormField, get_input_collector
+
+constructor:
+  automation:
+    type: str
+    default: "default"
+
+field_types:
+  text: Einfaches Textfeld
+  email: E-Mail mit Validierung
+  number: Zahl (int oder float)
+  boolean: Ja/Nein
+  select: Auswahl aus choices
+  choice: Alias für select
+
+FormField:
+  name: str (Feldname für data dict)
+  label: str (Anzeigename)
+  field_type: str (text, email, number, boolean, select)
+  required: bool (default: false)
+  default: Any (optional)
+  choices: List[str] (nur für select/choice)
+  min_value: Optional[float]
+  max_value: Optional[float]
+
+methods:
+  create_form:
+    description: Erstellt Formular und gibt ID zurück
+    parameters:
+      form_name: str
+      fields: List[FormField]
+    returns: int (form_id)
+
+  collect:
+    description: Erstellt Formular und wartet auf Eingabe
+    parameters:
+      form_name: str
+      fields: List[FormField]
+      timeout:
+        type: int
+        default: 300
+    returns: Optional[Dict[str, Any]]
+    behavior: Blockiert bis Eingabe oder Timeout
+
+  wait_for_submission:
+    parameters:
+      form_id: int
+      timeout:
+        type: int
+        default: 300
+      poll_interval:
+        type: int
+        default: 2
+    returns: Optional[Dict[str, Any]]
+
+  get_pending_forms:
+    description: Offene Formulare für externe UI
+    returns:
+      type: List[FormSubmission]
+      fields:
+        id: int
+        automation: str
+        form_name: str
+        fields: List[Dict]
+        status: str (pending, submitted, expired)
+        data: Optional[Dict]
+        created_at: datetime
+        submitted_at: Optional[datetime]
+
+  submit:
+    description: Formular ausfüllen (für externe UI)
+    parameters:
+      form_id: int
+      data: Dict[str, Any]
+    returns:
+      type: tuple (success: bool, errors: List[str])
+    behavior: Validiert gegen Feld-Definitionen
+
+factory:
+  function: get_input_collector(automation)
+]]></yaml-config>
+
+    <example><![CDATA[
+collector = InputCollector("user_registration")
+
+fields = [
+    FormField(name="name", label="Name", field_type="text", required=True),
+    FormField(name="email", label="E-Mail", field_type="email", required=True),
+    FormField(name="age", label="Alter", field_type="number", min_value=0),
+    FormField(
+        name="plan",
+        label="Tarif",
+        field_type="select",
+        choices=["Basic", "Pro", "Enterprise"],
+        default="Basic"
+    )
+]
+
+# Blockierend warten
+data = collector.collect("registration", fields, timeout=600)
+if data:
+    print(f"Name: {data['name']}, Email: {data['email']}")
+
+# Oder für externe UI:
+form_id = collector.create_form("registration", fields)
+pending = collector.get_pending_forms()
+# UI zeigt Formular an
+success, errors = collector.submit(form_id, {"name": "Max", "email": "max@test.de"})
+]]></example>
+  </component>
+
+  <component name="OutputParser" category="utils" file="utils/output_parser.py">
+    <yaml-config><![CDATA[
+name: OutputParser
+purpose: Strukturierte Daten aus LLM-Antworten extrahieren
+import: from agents.utils import OutputParser, ParseResult, get_output_parser
+
+constructor:
+  keine Parameter
+
+methods:
+  parse_json:
+    description: Extrahiert JSON aus Text
+    search_order:
+      1: Gesamter Text als JSON
+      2: "```json ... ```" Code-Blöcke
+      3: "``` ... ```" Code-Blöcke
+      4: Eingebetteter {...} Block
+      5: Eingebetteter [...] Array
+    parameters:
+      text: str
+      schema:
+        type: Dict[str, Dict]
+        optional: true
+        description: Schema für Validierung (wie Validator)
+      strict:
+        type: bool
+        default: false
+        description: Bei True schlägt fehl wenn Schema nicht erfüllt
+    returns:
+      type: ParseResult
+      fields:
+        success: bool
+        data: Any
+        raw: str (Original-Text)
+        format_detected: str (json_direct, json_codeblock, json_embedded, json_array, none)
+        errors: List[str]
+
+  parse_list:
+    description: Extrahiert Liste aus Text
+    formats_erkannt:
+      - JSON Array
+      - Markdown Liste (-, *)
+      - Nummerierte Liste (1., 2))
+      - Komma-getrennt
+      - Zeilenweise
+    parameters:
+      text: str
+      pattern:
+        type: str
+        optional: true
+        description: Custom Regex Pattern
+    returns: ParseResult
+
+  parse_key_value:
+    description: Extrahiert Key-Value Paare
+    parameters:
+      text: str
+      separator:
+        type: str
+        default: ":"
+    returns: ParseResult
+    type_inference:
+      - Boolean: true, false, yes, no, ja, nein
+      - None: null, none
+      - Integer: Zahlen ohne Dezimalpunkt
+      - Float: Zahlen mit Dezimalpunkt
+      - String: Rest
+
+factory:
+  function: get_output_parser()
+  caching: Globale Singleton-Instanz
+]]></yaml-config>
+
+    <example><![CDATA[
+parser = OutputParser()
+
+# JSON aus LLM-Antwort extrahieren
+llm_response = '''
+Hier ist das Ergebnis:
+```json
+{"name": "Test", "count": 42}
+```
+'''
+result = parser.parse_json(llm_response)
+if result.success:
+    print(result.data["name"])  # "Test"
+
+# Mit Schema-Validierung
+result = parser.parse_json(llm_response, schema={
+    "name": {"type": str, "required": True},
+    "count": {"type": int}
+})
+
+# Liste extrahieren
+list_response = '''
+Die Schritte sind:
+1. Daten laden
+2. Verarbeiten
+3. Speichern
+'''
+result = parser.parse_list(list_response)
+print(result.data)  # ["Daten laden", "Verarbeiten", "Speichern"]
+
+# Key-Value extrahieren
+kv_response = '''
+Name: Max
+Alter: 30
+Aktiv: true
+'''
+result = parser.parse_key_value(kv_response)
+print(result.data)  # {"Name": "Max", "Alter": 30, "Aktiv": True}
+]]></example>
+  </component>
+
+  <!-- ============================================================ -->
+  <!-- DATENTYPEN -->
+  <!-- ============================================================ -->
+
+  <datatypes>
+    <datatype name="ToolDefinition">
+      <field name="name" type="str">Tool-Name</field>
+      <field name="description" type="str">Beschreibung für LLM</field>
+      <field name="parameters" type="Dict[str, Any]">JSON Schema der Parameter</field>
+      <field name="handler" type="Optional[Callable]">Handler-Funktion (optional)</field>
+    </datatype>
+
+    <datatype name="ToolCall">
+      <field name="name" type="str">Name des aufgerufenen Tools</field>
+      <field name="arguments" type="Dict[str, Any]">Übergebene Argumente</field>
+      <field name="result" type="Optional[Any]">Ergebnis des Tool-Aufrufs</field>
+    </datatype>
+
+    <datatype name="StepResult">
+      <field name="step_name" type="str">Name des Schritts</field>
+      <field name="success" type="bool">Erfolgreich?</field>
+      <field name="result" type="Any">Rückgabewert der Step-Funktion</field>
+      <field name="error" type="Optional[str]">Fehlermeldung</field>
+      <field name="duration_ms" type="int">Dauer in Millisekunden</field>
+      <field name="timestamp" type="datetime">Ausführungszeitpunkt</field>
+    </datatype>
+
+    <datatype name="LogLevel" type="enum">
+      <value>DEBUG</value>
+      <value>INFO</value>
+      <value>WARNING</value>
+      <value>ERROR</value>
+      <value>CRITICAL</value>
+    </datatype>
+  </datatypes>
+
+  <!-- ============================================================ -->
+  <!-- FACTORY FUNKTIONEN -->
+  <!-- ============================================================ -->
+
+  <factories>
+    <factory name="get_storage_service" component="StorageService">
+      <parameter name="namespace" type="str" default="default"/>
+      <caching>Instanzen pro Namespace gecacht</caching>
+    </factory>
+
+    <factory name="get_notification_service" component="NotificationService">
+      <parameter name="automation" type="str" default="default"/>
+      <caching>Instanzen pro Automation gecacht</caching>
+    </factory>
+
+    <factory name="get_logger" component="Logger">
+      <parameter name="automation" type="str" default="default"/>
+      <parameter name="tags" type="List[str]" optional="true"/>
+      <caching>Neue Instanz bei jedem Aufruf</caching>
+    </factory>
+
+    <factory name="get_human_in_loop" component="HumanInLoop">
+      <parameter name="automation" type="str" default="default"/>
+      <caching>Neue Instanz bei jedem Aufruf</caching>
+    </factory>
+
+    <factory name="get_input_collector" component="InputCollector">
+      <parameter name="automation" type="str" default="default"/>
+      <caching>Neue Instanz bei jedem Aufruf</caching>
+    </factory>
+
+    <factory name="get_output_parser" component="OutputParser">
+      <caching>Globale Singleton-Instanz</caching>
+    </factory>
+
+    <factory name="get_validator" component="Validator">
+      <caching>Neue Instanz bei jedem Aufruf</caching>
+    </factory>
+  </factories>
+</agent-framework>
