@@ -104,3 +104,20 @@ class DatabaseWrapper:
 def get_db_wrapper(connection) -> DatabaseWrapper:
     """Factory-Funktion für DatabaseWrapper."""
     return DatabaseWrapper(connection)
+
+
+# Singleton für API-Zugriffe
+_db_instance = None
+
+def get_db() -> DatabaseWrapper:
+    """
+    Gibt Singleton DatabaseWrapper zurück.
+    
+    Verwendet für API-Endpoints die keinen eigenen Connection-Pool haben.
+    """
+    global _db_instance
+    if _db_instance is None:
+        from llm.infrastructure.database import DatabaseConnection
+        conn = DatabaseConnection()
+        _db_instance = DatabaseWrapper(conn)
+    return _db_instance
