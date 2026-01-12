@@ -2,6 +2,7 @@
 Sync-Service fuer bidirektionale Kontaktsynchronisation.
 
 Orchestriert Provider, Conflict Resolution und DB-Operationen.
+Verwendet DatabaseWrapper mit Dict-basierten Ergebnissen.
 """
 import logging
 from datetime import datetime
@@ -35,7 +36,7 @@ class SyncService:
         Initialisiert Sync-Service.
         
         Args:
-            db_connection: psycopg2 Connection oder Connection-Pool
+            db_connection: DatabaseWrapper Instanz
         """
         self.db = db_connection
         self.resolver = ConflictResolver()
@@ -44,13 +45,6 @@ class SyncService:
     def init_provider(self, provider_name: str, credentials: Dict[str, Any]) -> bool:
         """
         Initialisiert und authentifiziert einen Provider.
-        
-        Args:
-            provider_name: Name (nextcloud, google, icloud)
-            credentials: Provider-spezifische Credentials
-            
-        Returns:
-            True bei erfolgreicher Authentifizierung
         """
         if provider_name not in self.PROVIDERS:
             raise ValueError(f"Unknown provider: {provider_name}")
@@ -66,12 +60,6 @@ class SyncService:
     def sync_provider(self, provider_name: str) -> Dict[str, int]:
         """
         Fuehrt vollstaendige Synchronisation fuer einen Provider durch.
-        
-        Args:
-            provider_name: Name des Providers
-            
-        Returns:
-            Dict mit Statistiken (pulled, pushed, deleted, conflicts)
         """
         if provider_name not in self.providers:
             raise ValueError(f"Provider not initialized: {provider_name}")
@@ -123,43 +111,36 @@ class SyncService:
         uid_field = f"{provider_name}_uid"
         remote_uid = getattr(remote, uid_field)
         
-        # Existiert in DB?
         local = self._find_by_provider_uid(provider_name, remote_uid)
         
         if local is None:
-            # Neu: In DB einfuegen
             self._insert_contact(remote, provider_name)
             return 'pulled'
         
-        # Konfliktaufloesung
         result = self.resolver.resolve(local, remote, provider_name)
         
         if result.action == 'pull':
             self._update_contact(result.contact)
             return 'pulled'
         elif result.action == 'push':
-            return 'conflict'  # Wird spaeter gepusht
+            return 'conflict'
         
         return 'none'
     
     def _handle_remote_delete(self, provider_name: str, uid: str) -> None:
         """Soft-Delete eines remote geloeschten Kontakts."""
-        cursor = self.db.cursor()
         uid_field = f"{provider_name}_uid"
-        
-        cursor.execute(f"""
+        self.db.execute(f"""
             UPDATE people 
             SET deleted_at = NOW(), sync_status = 'deleted'
             WHERE {uid_field} = %s AND deleted_at IS NULL
-        """, (uid,))
-        self.db.commit()
+        """, (uid,), fetch=False)
     
     def _find_by_provider_uid(self, provider_name: str, uid: str) -> Optional[Contact]:
         """Findet Kontakt anhand Provider-UID."""
-        cursor = self.db.cursor()
         uid_field = f"{provider_name}_uid"
         
-        cursor.execute(f"""
+        result = self.db.execute(f"""
             SELECT id, first_name, middle_name, last_name, phone, email,
                    street, house_nr, zip, city, country, important_dates,
                    last_contact, context, created_at, updated_at,
@@ -168,51 +149,49 @@ class SyncService:
             WHERE {uid_field} = %s AND deleted_at IS NULL
         """, (uid,))
         
-        row = cursor.fetchone()
-        if not row:
+        if not result:
             return None
         
+        row = result[0]
         return Contact(
-            id=row[0],
-            first_name=row[1] or '',
-            middle_name=row[2],
-            last_name=row[3] or '',
-            phone=row[4],
-            email=row[5],
-            street=row[6],
-            house_nr=row[7],
-            zip=row[8],
-            city=row[9],
-            country=row[10],
-            important_dates=row[11] or [],
-            last_contact=row[12],
-            context=row[13],
-            created_at=row[14],
-            updated_at=row[15],
-            icloud_uid=row[16],
-            google_uid=row[17],
-            nextcloud_uid=row[18],
-            sync_etag=row[19]
+            id=row['id'],
+            first_name=row['first_name'] or '',
+            middle_name=row['middle_name'],
+            last_name=row['last_name'] or '',
+            phone=row['phone'],
+            email=row['email'],
+            street=row['street'],
+            house_nr=row['house_nr'],
+            zip=row['zip'],
+            city=row['city'],
+            country=row['country'],
+            important_dates=row['important_dates'] or [],
+            last_contact=row['last_contact'],
+            context=row['context'],
+            created_at=row['created_at'],
+            updated_at=row['updated_at'],
+            icloud_uid=row['icloud_uid'],
+            google_uid=row['google_uid'],
+            nextcloud_uid=row['nextcloud_uid'],
+            sync_etag=row['sync_etag']
         )
     
     def _insert_contact(self, contact: Contact, provider_name: str) -> int:
         """Fuegt neuen Kontakt in DB ein."""
-        cursor = self.db.cursor()
-        
-        cursor.execute("""
-            INSERT INTO people (
+        result = self.db.execute("""
+            INSERT INTO people (name, 
                 first_name, middle_name, last_name, phone, email,
                 street, house_nr, zip, city, country, important_dates,
                 last_contact, context, icloud_uid, google_uid, nextcloud_uid,
                 sync_etag, sync_status, created_at, updated_at
-            ) VALUES (
+            ) VALUES (%s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, 'synced', NOW(), NOW()
             ) RETURNING id
         """, (
-            contact.first_name, contact.middle_name, contact.last_name,
+            f"{contact.first_name or ''} {contact.last_name or ''}".strip() or contact.first_name or "Unbekannt", contact.first_name, contact.middle_name, contact.last_name,
             contact.phone, contact.email,
             contact.street, contact.house_nr, contact.zip, contact.city, contact.country,
             json.dumps(contact.important_dates),
@@ -221,15 +200,11 @@ class SyncService:
             contact.sync_etag
         ))
         
-        new_id = cursor.fetchone()[0]
-        self.db.commit()
-        return new_id
+        return result[0]['id'] if result else None
     
     def _update_contact(self, contact: Contact) -> None:
         """Aktualisiert existierenden Kontakt."""
-        cursor = self.db.cursor()
-        
-        cursor.execute("""
+        self.db.execute("""
             UPDATE people SET
                 first_name = %s, middle_name = %s, last_name = %s,
                 phone = %s, email = %s,
@@ -239,22 +214,19 @@ class SyncService:
                 sync_etag = %s, sync_status = 'synced', updated_at = NOW()
             WHERE id = %s
         """, (
-            contact.first_name, contact.middle_name, contact.last_name,
+            f"{contact.first_name or ''} {contact.last_name or ''}".strip() or contact.first_name or "Unbekannt", contact.first_name, contact.middle_name, contact.last_name,
             contact.phone, contact.email,
             contact.street, contact.house_nr, contact.zip, contact.city, contact.country,
             json.dumps(contact.important_dates), contact.last_contact, contact.context,
             contact.icloud_uid, contact.google_uid, contact.nextcloud_uid,
             contact.sync_etag, contact.id
-        ))
-        self.db.commit()
+        ), fetch=False)
     
     def _get_pending_contacts(self, provider_name: str) -> List[Contact]:
         """Holt alle Kontakte die gepusht werden muessen."""
-        cursor = self.db.cursor()
         uid_field = f"{provider_name}_uid"
         
-        # Kontakte ohne Provider-UID oder mit pending status
-        cursor.execute(f"""
+        result = self.db.execute(f"""
             SELECT id, first_name, middle_name, last_name, phone, email,
                    street, house_nr, zip, city, country, important_dates,
                    last_contact, context, created_at, updated_at,
@@ -265,79 +237,68 @@ class SyncService:
         """)
         
         contacts = []
-        for row in cursor.fetchall():
+        for row in (result or []):
             contacts.append(Contact(
-                id=row[0],
-                first_name=row[1] or '',
-                middle_name=row[2],
-                last_name=row[3] or '',
-                phone=row[4],
-                email=row[5],
-                street=row[6],
-                house_nr=row[7],
-                zip=row[8],
-                city=row[9],
-                country=row[10],
-                important_dates=row[11] or [],
-                last_contact=row[12],
-                context=row[13],
-                created_at=row[14],
-                updated_at=row[15],
-                icloud_uid=row[16],
-                google_uid=row[17],
-                nextcloud_uid=row[18],
-                sync_etag=row[19]
+                id=row['id'],
+                first_name=row['first_name'] or '',
+                middle_name=row['middle_name'],
+                last_name=row['last_name'] or '',
+                phone=row['phone'],
+                email=row['email'],
+                street=row['street'],
+                house_nr=row['house_nr'],
+                zip=row['zip'],
+                city=row['city'],
+                country=row['country'],
+                important_dates=row['important_dates'] or [],
+                last_contact=row['last_contact'],
+                context=row['context'],
+                created_at=row['created_at'],
+                updated_at=row['updated_at'],
+                icloud_uid=row['icloud_uid'],
+                google_uid=row['google_uid'],
+                nextcloud_uid=row['nextcloud_uid'],
+                sync_etag=row['sync_etag']
             ))
         
         return contacts
     
     def _update_provider_uid(self, contact_id: int, provider_name: str, uid: str) -> None:
         """Speichert Provider-UID nach erfolgreichem Push."""
-        cursor = self.db.cursor()
         uid_field = f"{provider_name}_uid"
-        
-        cursor.execute(f"""
+        self.db.execute(f"""
             UPDATE people SET {uid_field} = %s WHERE id = %s
-        """, (uid, contact_id))
-        self.db.commit()
+        """, (uid, contact_id), fetch=False)
     
     def _mark_synced(self, contact_id: int) -> None:
         """Markiert Kontakt als synchronisiert."""
-        cursor = self.db.cursor()
-        cursor.execute("""
+        self.db.execute("""
             UPDATE people SET sync_status = 'synced' WHERE id = %s
-        """, (contact_id,))
-        self.db.commit()
+        """, (contact_id,), fetch=False)
     
     def _get_sync_token(self, provider_name: str) -> Optional[str]:
         """Holt letzten Sync-Token aus sync_config."""
-        cursor = self.db.cursor()
-        cursor.execute("""
-            SELECT credentials->>'sync_token' FROM sync_config
+        result = self.db.execute("""
+            SELECT credentials->>'sync_token' as sync_token FROM sync_config
             WHERE provider = %s
         """, (provider_name,))
-        row = cursor.fetchone()
-        return row[0] if row else None
+        return result[0]['sync_token'] if result else None
     
     def _save_sync_token(self, provider_name: str, token: str) -> None:
         """Speichert neuen Sync-Token."""
-        cursor = self.db.cursor()
-        cursor.execute("""
+        self.db.execute("""
             UPDATE sync_config 
             SET credentials = jsonb_set(COALESCE(credentials, '{}'), '{sync_token}', %s::jsonb),
                 last_sync = NOW(),
                 updated_at = NOW()
             WHERE provider = %s
-        """, (json.dumps(token), provider_name))
-        self.db.commit()
+        """, (json.dumps(token), provider_name), fetch=False)
     
     def _log_sync(self, provider_name: str, stats: Dict[str, int]) -> None:
         """Schreibt Sync-Log Eintrag."""
-        cursor = self.db.cursor()
-        
         for action, count in stats.items():
             if count > 0:
-                cursor.execute("""
+                self.db.execute("""
                     INSERT INTO sync_log (provider, direction, action, status, details)
                     VALUES (%s, %s, %s, 'success', %s)
                 """, (
@@ -345,6 +306,4 @@ class SyncService:
                     'sync',
                     action,
                     json.dumps({'count': count})
-                ))
-        
-        self.db.commit()
+                ), fetch=False)

@@ -116,6 +116,14 @@ class DatabaseWrapper:
         """Macht Aenderungen rueckgaengig."""
         self._conn.rollback()
 
+    def cursor(self):
+        """
+        Gibt einen Cursor Context Manager zurueck.
+        
+        Fuer Kompatibilitaet mit Code der cursor() erwartet.
+        """
+        return self._conn.get_cursor()
+
 
 def get_db_wrapper(connection) -> DatabaseWrapper:
     """Factory-Funktion fuer DatabaseWrapper."""

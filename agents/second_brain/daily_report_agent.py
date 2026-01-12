@@ -6,12 +6,26 @@ Sendet Report optional via Telegram.
 """
 
 import sys
+from datetime import datetime, date, time
 from typing import Dict, Any, List, Optional
 
 sys.path.insert(0, "/opt/python-modules")
 
 from .configurable_agent import ConfigurableAgent, get_config_manager
 from agents.services.notification_service import get_notification_service
+
+
+def _serialize_dates(obj):
+    """Konvertiert datetime-Objekte rekursiv zu Strings."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, time):
+        return obj.strftime("%H:%M")
+    elif isinstance(obj, dict):
+        return {k: _serialize_dates(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_serialize_dates(item) for item in obj]
+    return obj
 
 
 class DailyReportAgent(ConfigurableAgent):
@@ -40,22 +54,6 @@ class DailyReportAgent(ConfigurableAgent):
     ) -> Dict[str, Any]:
         """
         Generiert täglichen Report.
-
-        Args:
-            today: Datum im Format YYYY-MM-DD
-            open_tasks: [{id, title, due_date, priority, project_name, person_name, status}, ...]
-            overdue_tasks: [{id, title, due_date, days_overdue}, ...]
-            todays_calendar: [{id, title, start_time, person_name}, ...]
-            recently_completed: [{id, title, completed_at}, ...]
-
-        Returns:
-            {
-                top_3_tasks: [{id, title, why}, ...],
-                avoiding: {id, title, days_overdue, suggestion},
-                quick_win: {id, title, effort},
-                todays_calendar: [{title, time, person}, ...],
-                summary_text: str
-            }
         """
         result = self.execute(
             today=today,
@@ -71,8 +69,8 @@ class DailyReportAgent(ConfigurableAgent):
             if summary:
                 self.notifier.send_telegram(
                     chat_id=self.telegram_chat_id,
-                    message=f"📋 Daily Report\n\n{summary}",
-                    message_type="info"
+                    message=f"Daily Report\n\n{summary}",
+                    
                 )
 
         return result
@@ -80,27 +78,23 @@ class DailyReportAgent(ConfigurableAgent):
     def generate_from_db(self) -> Dict[str, Any]:
         """
         Generiert Report mit Daten direkt aus der Datenbank.
-
-        Convenience-Methode die alle nötigen Queries selbst macht.
         """
         from datetime import datetime, timedelta
 
         today = datetime.now().strftime("%Y-%m-%d")
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Open Tasks (GTD: next und waiting, sortiert nach Priorität)
         open_tasks = self.db.execute("""
             SELECT t.id, t.title, t.due_date, t.priority, t.status,
                    p.name as project_name, pe.name as person_name
             FROM tasks t
             LEFT JOIN projects p ON t.project_id = p.id
             LEFT JOIN people pe ON t.person_id = pe.id
-            WHERE t.status IN ('next', 'waiting')
+            WHERE t.status IN ('inbox', 'next', 'waiting')
             ORDER BY t.priority ASC, t.due_date ASC NULLS LAST
             LIMIT 20
         """)
 
-        # Overdue Tasks (alle nicht-done)
         overdue_tasks = self.db.execute("""
             SELECT id, title, due_date, status,
                    EXTRACT(DAY FROM NOW() - due_date)::int as days_overdue
@@ -110,7 +104,6 @@ class DailyReportAgent(ConfigurableAgent):
             LIMIT 10
         """)
 
-        # Today's Events
         todays_calendar = self.db.execute("""
             SELECT e.id, e.title, e.start_time, p.name as person_name
             FROM calendar_events e
@@ -119,7 +112,6 @@ class DailyReportAgent(ConfigurableAgent):
             ORDER BY e.start_time ASC
         """)
 
-        # Recently Completed
         recently_completed = self.db.execute("""
             SELECT id, title, updated_at as completed_at
             FROM tasks
@@ -130,10 +122,10 @@ class DailyReportAgent(ConfigurableAgent):
 
         return self.generate(
             today=today,
-            open_tasks=[dict(r) for r in open_tasks] if open_tasks else [],
-            overdue_tasks=[dict(r) for r in overdue_tasks] if overdue_tasks else [],
-            todays_calendar=[dict(r) for r in todays_calendar] if todays_calendar else [],
-            recently_completed=[dict(r) for r in recently_completed] if recently_completed else []
+            open_tasks=_serialize_dates(open_tasks or []),
+            overdue_tasks=_serialize_dates(overdue_tasks or []),
+            todays_calendar=_serialize_dates(todays_calendar or []),
+            recently_completed=_serialize_dates(recently_completed or [])
         )
 
 

@@ -1,13 +1,13 @@
 """
-WeeklyReportAgent - Erstellt wöchentlichen Überblick mit Pattern-Erkennung.
+WeeklyReportAgent - Erstellt woechentlichen Ueberblick mit Pattern-Erkennung.
 
-Wird wöchentlich Sonntag abends per Cron aufgerufen.
+Wird woechentlich Sonntag abends per Cron aufgerufen.
 Sendet Report optional via Telegram.
 """
 
 import sys
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, date, time, timedelta
 
 sys.path.insert(0, "/opt/python-modules")
 
@@ -15,11 +15,24 @@ from .configurable_agent import ConfigurableAgent
 from agents.services.notification_service import get_notification_service
 
 
+def _serialize_dates(obj):
+    """Konvertiert datetime-Objekte rekursiv zu Strings."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, time):
+        return obj.strftime("%H:%M")
+    elif isinstance(obj, dict):
+        return {k: _serialize_dates(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_serialize_dates(item) for item in obj]
+    return obj
+
+
 class WeeklyReportAgent(ConfigurableAgent):
     """
-    Spezialisierter Agent für wöchentliche Reports mit Pattern-Erkennung.
+    Spezialisierter Agent fuer woechentliche Reports mit Pattern-Erkennung.
 
-    Lädt Konfiguration aus agent_configs mit agent_name='weekly_report_agent'.
+    Laedt Konfiguration aus agent_configs mit agent_name='weekly_report_agent'.
     """
 
     def __init__(self, db_connection, telegram_chat_id: Optional[str] = None):
@@ -43,33 +56,7 @@ class WeeklyReportAgent(ConfigurableAgent):
         patterns: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Generiert wöchentlichen Report.
-
-        Args:
-            period_start: Start-Datum YYYY-MM-DD
-            period_end: End-Datum YYYY-MM-DD
-            completed_tasks: [{id, title, completed_at, project_name}, ...]
-            new_tasks: [{id, title, created_at}, ...]
-            open_tasks: [{id, title, due_date, priority}, ...]
-            active_projects: [{id, name, open_tasks_count}, ...]
-            upcoming_calendar: [{id, title, start_time, person_name}, ...]
-            patterns: {
-                most_active_day: str,
-                avg_tasks_completed_per_day: float,
-                recurring_tags: [str],
-                people_contacted: [str]
-            }
-
-        Returns:
-            {
-                week_summary: str,
-                completed_count: int,
-                biggest_open_projects: [{name, open_tasks_count}, ...],
-                next_week_priorities: [{id, title, reason}, ...],
-                upcoming_calendar: [{title, date, person}, ...],
-                pattern_insight: str,
-                summary_text: str
-            }
+        Generiert woechentlichen Report.
         """
         result = self.execute(
             period_start=period_start,
@@ -88,8 +75,8 @@ class WeeklyReportAgent(ConfigurableAgent):
             if summary:
                 self.notifier.send_telegram(
                     chat_id=self.telegram_chat_id,
-                    message=f"📊 Weekly Report\n\n{summary}",
-                    message_type="info"
+                    message=f"Weekly Report\n\n{summary}",
+                    
                 )
 
         return result
@@ -97,14 +84,11 @@ class WeeklyReportAgent(ConfigurableAgent):
     def generate_from_db(self) -> Dict[str, Any]:
         """
         Generiert Report mit Daten direkt aus der Datenbank.
-
-        Convenience-Methode die alle nötigen Queries selbst macht.
         """
         today = datetime.now()
         period_end = today.strftime("%Y-%m-%d")
         period_start = (today - timedelta(days=7)).strftime("%Y-%m-%d")
 
-        # Completed Tasks this week
         completed_tasks = self.db.execute("""
             SELECT t.id, t.title, t.updated_at as completed_at, p.name as project_name
             FROM tasks t
@@ -114,7 +98,6 @@ class WeeklyReportAgent(ConfigurableAgent):
             ORDER BY t.updated_at DESC
         """, (period_start,))
 
-        # New Tasks this week
         new_tasks = self.db.execute("""
             SELECT id, title, created_at
             FROM tasks
@@ -122,7 +105,6 @@ class WeeklyReportAgent(ConfigurableAgent):
             ORDER BY created_at DESC
         """, (period_start,))
 
-        # Open Tasks
         open_tasks = self.db.execute("""
             SELECT id, title, due_date, priority
             FROM tasks
@@ -131,7 +113,6 @@ class WeeklyReportAgent(ConfigurableAgent):
             LIMIT 20
         """)
 
-        # Active Projects with task counts
         active_projects = self.db.execute("""
             SELECT p.id, p.name,
                    COUNT(t.id) FILTER (WHERE t.status = 'open') as open_tasks_count
@@ -143,7 +124,6 @@ class WeeklyReportAgent(ConfigurableAgent):
             LIMIT 10
         """)
 
-        # Upcoming Events (next 7 days)
         upcoming_calendar = self.db.execute("""
             SELECT e.id, e.title, e.start_time, p.name as person_name
             FROM calendar_events e
@@ -154,24 +134,22 @@ class WeeklyReportAgent(ConfigurableAgent):
             LIMIT 10
         """)
 
-        # Patterns
         patterns = self._calculate_patterns(period_start)
 
         return self.generate(
             period_start=period_start,
             period_end=period_end,
-            completed_tasks=[dict(r) for r in completed_tasks],
-            new_tasks=[dict(r) for r in new_tasks],
-            open_tasks=[dict(r) for r in open_tasks],
-            active_projects=[dict(r) for r in active_projects],
-            upcoming_calendar=[dict(r) for r in upcoming_calendar],
+            completed_tasks=_serialize_dates(completed_tasks or []),
+            new_tasks=_serialize_dates(new_tasks or []),
+            open_tasks=_serialize_dates(open_tasks or []),
+            active_projects=_serialize_dates(active_projects or []),
+            upcoming_calendar=_serialize_dates(upcoming_calendar or []),
             patterns=patterns
         )
 
     def _calculate_patterns(self, period_start: str) -> Dict[str, Any]:
         """Berechnet Patterns aus den Daten der letzten Woche."""
 
-        # Most active day
         day_counts = self.db.execute("""
             SELECT TO_CHAR(updated_at, 'Day') as day_name, COUNT(*) as count
             FROM tasks
@@ -183,7 +161,6 @@ class WeeklyReportAgent(ConfigurableAgent):
 
         most_active_day = day_counts[0]["day_name"].strip() if day_counts else "N/A"
 
-        # Avg tasks completed per day
         total_completed = self.db.execute("""
             SELECT COUNT(*) as count
             FROM tasks
@@ -192,7 +169,6 @@ class WeeklyReportAgent(ConfigurableAgent):
 
         avg_per_day = round(total_completed[0]["count"] / 7, 1) if total_completed else 0
 
-        # People contacted (from calendar_events)
         people = self.db.execute("""
             SELECT DISTINCT p.name
             FROM calendar_events e
@@ -201,9 +177,8 @@ class WeeklyReportAgent(ConfigurableAgent):
             LIMIT 10
         """, (period_start,))
 
-        people_contacted = [p["name"] for p in people]
+        people_contacted = [p["name"] for p in (people or [])]
 
-        # Recurring tags (placeholder - would need taggables join)
         recurring_tags = []
 
         return {
@@ -215,5 +190,5 @@ class WeeklyReportAgent(ConfigurableAgent):
 
 
 def get_weekly_report_agent(db_connection, telegram_chat_id: str = None) -> WeeklyReportAgent:
-    """Factory-Funktion für WeeklyReportAgent."""
+    """Factory-Funktion fuer WeeklyReportAgent."""
     return WeeklyReportAgent(db_connection, telegram_chat_id)
