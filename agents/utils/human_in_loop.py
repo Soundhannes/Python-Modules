@@ -88,14 +88,14 @@ class HumanInLoop:
             """)
             self._db.commit()
     
-    def _create_request(self, request_type: str, question: str, options: List[str] = None) -> int:
+    def _create_request(self, request_type: str, question: str, options: List[str] = None, context: Dict = None) -> int:
         """Erstellt eine neue Anfrage."""
         with self._db.get_cursor() as cursor:
             cursor.execute(f"""
-                INSERT INTO {self.TABLE_NAME} (automation, request_type, question, options)
-                VALUES (%s, %s, %s, %s::jsonb)
+                INSERT INTO {self.TABLE_NAME} (automation, request_type, question, options, context)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
                 RETURNING id
-            """, (self.automation, request_type, question, json.dumps(options) if options else None))
+            """, (self.automation, request_type, question, json.dumps(options) if options else None, json.dumps(context) if context else None))
             request_id = cursor.fetchone()["id"]
             self._db.commit()
             return request_id
@@ -244,3 +244,12 @@ class HumanInLoop:
 
 def get_human_in_loop(automation: str = "default") -> HumanInLoop:
     return HumanInLoop(automation)
+
+    def create_choice_request(self, question: str, options: List[str], context: Dict = None) -> int:
+        """
+        Erstellt eine Choice-Anfrage ohne zu blockieren.
+        
+        Returns:
+            request_id für spätere Verarbeitung
+        """
+        return self._create_request("choice", question, options, context)

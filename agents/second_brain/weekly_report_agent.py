@@ -39,7 +39,7 @@ class WeeklyReportAgent(ConfigurableAgent):
         new_tasks: List[Dict],
         open_tasks: List[Dict],
         active_projects: List[Dict],
-        upcoming_events: List[Dict],
+        upcoming_calendar: List[Dict],
         patterns: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
@@ -52,7 +52,7 @@ class WeeklyReportAgent(ConfigurableAgent):
             new_tasks: [{id, title, created_at}, ...]
             open_tasks: [{id, title, due_date, priority}, ...]
             active_projects: [{id, name, open_tasks_count}, ...]
-            upcoming_events: [{id, title, event_date, person_name}, ...]
+            upcoming_calendar: [{id, title, start_time, person_name}, ...]
             patterns: {
                 most_active_day: str,
                 avg_tasks_completed_per_day: float,
@@ -66,7 +66,7 @@ class WeeklyReportAgent(ConfigurableAgent):
                 completed_count: int,
                 biggest_open_projects: [{name, open_tasks_count}, ...],
                 next_week_priorities: [{id, title, reason}, ...],
-                upcoming_events: [{title, date, person}, ...],
+                upcoming_calendar: [{title, date, person}, ...],
                 pattern_insight: str,
                 summary_text: str
             }
@@ -78,7 +78,7 @@ class WeeklyReportAgent(ConfigurableAgent):
             new_tasks=new_tasks,
             open_tasks=open_tasks,
             active_projects=active_projects,
-            upcoming_events=upcoming_events,
+            upcoming_calendar=upcoming_calendar,
             patterns=patterns
         )
 
@@ -144,13 +144,13 @@ class WeeklyReportAgent(ConfigurableAgent):
         """)
 
         # Upcoming Events (next 7 days)
-        upcoming_events = self.db.execute("""
-            SELECT e.id, e.title, e.event_date, p.name as person_name
-            FROM events e
+        upcoming_calendar = self.db.execute("""
+            SELECT e.id, e.title, e.start_time, p.name as person_name
+            FROM calendar_events e
             LEFT JOIN people p ON e.person_id = p.id
-            WHERE e.event_date >= CURRENT_DATE
-              AND e.event_date < CURRENT_DATE + INTERVAL '7 days'
-            ORDER BY e.event_date ASC
+            WHERE e.start_time >= CURRENT_DATE
+              AND e.start_time < CURRENT_DATE + INTERVAL '7 days'
+            ORDER BY e.start_time ASC
             LIMIT 10
         """)
 
@@ -164,7 +164,7 @@ class WeeklyReportAgent(ConfigurableAgent):
             new_tasks=[dict(r) for r in new_tasks],
             open_tasks=[dict(r) for r in open_tasks],
             active_projects=[dict(r) for r in active_projects],
-            upcoming_events=[dict(r) for r in upcoming_events],
+            upcoming_calendar=[dict(r) for r in upcoming_calendar],
             patterns=patterns
         )
 
@@ -192,12 +192,12 @@ class WeeklyReportAgent(ConfigurableAgent):
 
         avg_per_day = round(total_completed[0]["count"] / 7, 1) if total_completed else 0
 
-        # People contacted (from events)
+        # People contacted (from calendar_events)
         people = self.db.execute("""
             SELECT DISTINCT p.name
-            FROM events e
+            FROM calendar_events e
             JOIN people p ON e.person_id = p.id
-            WHERE e.event_date >= %s
+            WHERE e.start_time >= %s
             LIMIT 10
         """, (period_start,))
 

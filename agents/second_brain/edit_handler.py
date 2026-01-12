@@ -26,13 +26,17 @@ class EditType(Enum):
 
 
 # Erlaubte Tabellen für Edits
-ALLOWED_TABLES = ["people", "projects", "ideas", "tasks", "events"]
+ALLOWED_TABLES = ["people", "projects", "ideas", "tasks", "events", "calendar_events"]
 
 # Kritische Operationen
 CRITICAL_OPERATIONS = [
     "delete",
     "people.name",
-    "people.context",  # Enthält oft Kontaktdaten
+    "people.first_name",
+    "people.last_name",
+    "people.phone",
+    "people.email",
+    "people.context",
 ]
 
 
@@ -148,7 +152,7 @@ class EditHandler(ConfigurableAgent):
             return True
 
         # Personendaten sind kritisch
-        if table == "people" and field in ["name", "context"]:
+        if table == "people" and field in ["name", "first_name", "last_name", "phone", "email", "context"]:
             return True
 
         return False
@@ -178,7 +182,7 @@ class EditHandler(ConfigurableAgent):
 
         try:
             if operation == "delete":
-                self.db.execute(f"DELETE FROM {table} WHERE id = %s", (entity_id,))
+                self.db.execute(f"UPDATE {table} SET deleted_at = NOW() WHERE id = %s AND deleted_at IS NULL", (entity_id,))
                 return EditResult(
                     success=True,
                     message=f"Eintrag #{entity_id} aus {table} gelöscht."

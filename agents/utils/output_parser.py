@@ -78,9 +78,12 @@ class OutputParser:
         data = None
         format_detected = "none"
 
+        # Zeilenumbrueche in Strings reparieren
+        fixed_text = self._fix_multiline_strings(text)
+        
         # Versuch 1: Gesamter Text
         try:
-            data = json.loads(text.strip())
+            data = json.loads(fixed_text.strip())
             format_detected = "json_direct"
         except json.JSONDecodeError:
             pass
@@ -151,7 +154,9 @@ class OutputParser:
                 elif char == "}":
                     depth -= 1
                     if depth == 0:
-                        return json.loads(text[start:i+1])
+                        block = text[start:i+1]
+                        fixed = self._fix_multiline_strings(block)
+                        return json.loads(fixed)
         except (ValueError, json.JSONDecodeError):
             pass
         return None
@@ -171,6 +176,35 @@ class OutputParser:
         except (ValueError, json.JSONDecodeError):
             pass
         return None
+
+    def _fix_multiline_strings(self, text: str) -> str:
+        """Repariert Zeilenumbrueche in JSON-Strings."""
+        result = []
+        in_string = False
+        escape_next = False
+        
+        for char in text:
+            if escape_next:
+                result.append(char)
+                escape_next = False
+                continue
+            
+            if char == chr(92):  # backslash
+                escape_next = True
+                result.append(char)
+                continue
+            
+            if char == chr(34):  # double quote
+                in_string = not in_string
+                result.append(char)
+                continue
+            
+            if in_string and char in chr(10) + chr(13):  # newline, carriage return
+                result.append(' ')
+            else:
+                result.append(char)
+        
+        return ''.join(result)
 
     def _validate_schema(
         self,

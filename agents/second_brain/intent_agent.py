@@ -34,7 +34,7 @@ class IntentAgent(ConfigurableAgent):
         Returns:
             {
                 intent: create|update|complete|delete|unclear,
-                category: people|projects|ideas|tasks|events (nur bei create),
+                category: people|projects|ideas|tasks|calendar_events (nur bei create),
                 target: {table, id} (bei update/complete/delete),
                 options: [{table, id, label}, ...] (bei unclear),
                 question: str (bei unclear),

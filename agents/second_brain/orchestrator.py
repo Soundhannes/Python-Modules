@@ -38,7 +38,7 @@ class SecondBrainOrchestrator:
     - Create-Flow für neue Einträge
     """
 
-    TABLES = ['projects', 'tasks', 'people', 'ideas', 'events']
+    TABLES = ['projects', 'tasks', 'people', 'ideas', 'events', 'calendar_events']
 
     def __init__(self, db_connection, telegram_chat_id: Optional[str] = None):
         """
@@ -242,7 +242,7 @@ class SecondBrainOrchestrator:
         matches = []
 
         for table in self.TABLES:
-            name_col = "title" if table in ["tasks", "events"] else "name"
+            name_col = "title" if table in ["tasks", "calendar_events"] else "name"
             notes_col = "notes" if table != "people" else "context"
 
             for keyword in keywords:
@@ -296,10 +296,15 @@ class SecondBrainOrchestrator:
 
         if options:
             choice_options = [f"{o.get('label', o.get('table'))} ({o.get('table')})" for o in options]
-            request_id = self.human_loop.request_choice(
+            context = {
+                "text": text,
+                "intent_result": intent_result,
+                "options": options
+            }
+            request_id = self.human_loop.create_choice_request(
                 question=question,
                 options=choice_options,
-                timeout_seconds=3600
+                context=context
             )
 
             if self.notifier and self.telegram_chat_id:
@@ -350,7 +355,7 @@ class SecondBrainOrchestrator:
                 action = "abgeschlossen"
 
             elif intent == "delete":
-                query = f"DELETE FROM {table} WHERE id = %s RETURNING id"
+                query = f"UPDATE {table} SET deleted_at = NOW() WHERE id = %s AND deleted_at IS NULL RETURNING id"
                 result = self.db.execute(query, (record_id,))
                 action = "gelöscht"
 
@@ -478,9 +483,9 @@ class SecondBrainOrchestrator:
         person_name = linked.get("person_name")
         project_name = linked.get("project_name")
 
-        if person_name and table in ["tasks", "events"]:
+        if person_name and table in ["tasks", "calendar_events"]:
             person = self.db.execute(
-                "SELECT id FROM people WHERE LOWER(name) = LOWER(%s)",
+                "SELECT id FROM people WHERE LOWER(name) = LOWER(%s) AND deleted_at IS NULL",
                 (person_name,)
             )
 
@@ -499,9 +504,9 @@ class SecondBrainOrchestrator:
                 (person_id, record_id)
             )
 
-        if project_name and table in ["tasks", "events"]:
+        if project_name and table in ["tasks", "calendar_events"]:
             project = self.db.execute(
-                "SELECT id FROM projects WHERE LOWER(name) LIKE LOWER(%s)",
+                "SELECT id FROM projects WHERE LOWER(name) LIKE LOWER(%s) AND deleted_at IS NULL",
                 (f"%{project_name}%",)
             )
 
@@ -541,18 +546,67 @@ class SecondBrainOrchestrator:
 
     def respond_to_clarification(self, request_id: str, choice: str) -> Dict:
         """Verarbeitet User-Antwort auf Rückfrage."""
+        import re
+        
+        # Request aus DB holen
         request = self.db.execute(
-            "SELECT context FROM human_requests WHERE id = %s",
+            "SELECT context, status FROM human_requests WHERE id = %s",
             (request_id,)
         )
 
         if not request:
             return {"success": False, "error": "Request nicht gefunden"}
+        
+        if request[0].get("status") != "pending":
+            return {"success": False, "error": "Request bereits beantwortet"}
 
         context = request[0].get("context", {})
-        original_text = context.get("text", "")
+        if not context:
+            return {"success": False, "error": "Kein Context gespeichert"}
 
-        return {"success": True, "message": "Verarbeitung fortgesetzt"}
+        original_text = context.get("text", "")
+        intent_result = context.get("intent_result", {})
+        options = context.get("options", [])
+
+        # Table aus Choice extrahieren: "Person Tim (people)" -> "people"
+        table_match = re.search(r"\(([a-z_]+)\)$", choice)
+        if not table_match:
+            return {"success": False, "error": f"Konnte Tabelle nicht aus '{choice}' extrahieren"}
+        
+        selected_table = table_match.group(1)
+        
+        # Passende Option finden
+        selected_option = None
+        for opt in options:
+            if opt.get("table") == selected_table:
+                selected_option = opt
+                break
+        
+        if not selected_option:
+            return {"success": False, "error": f"Option fuer Tabelle '{selected_table}' nicht gefunden"}
+
+        # Intent-Result mit gewaehlter Option aktualisieren
+        intent_result["target"] = {
+            "table": selected_table,
+            "id": selected_option.get("id"),
+            "label": selected_option.get("label")
+        }
+        intent_result["confidence"] = 1.0  # User hat bestaetigt
+        
+        # Request als beantwortet markieren
+        self.human_loop.respond(int(request_id), choice)
+        
+        # Urspruengliche Aktion ausfuehren
+        intent = intent_result.get("intent")
+        
+        if intent in ["complete", "delete"]:
+            return self._execute_simple(original_text, intent_result)
+        elif intent == "create":
+            return self._execute_create(original_text, intent_result)
+        elif intent == "edit":
+            return self._handle_edit(original_text, confirmed=True)
+        else:
+            return {"success": False, "error": f"Unbekannter Intent: {intent}"}
 
 
 def get_orchestrator(db_connection, telegram_chat_id: str = None) -> SecondBrainOrchestrator:

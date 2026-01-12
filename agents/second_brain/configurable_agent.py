@@ -272,18 +272,21 @@ class ConfigurableAgent(BaseAgent):
 
         if not result.success:
             return {
-                "error": True,
+                "error": "Agent execution failed",
                 "error_code": "AGENT_ERROR",
                 "error_message": result.error,
                 "agent_name": self.name
             }
 
         # Output parsen und validieren
+        print(f"[DEBUG] LLM raw response: {result.response[:500]}")
         parsed = self.parser.parse_json(result.response, schema=self.output_schema)
+        if not parsed.success:
+            print(f"[ERROR] Parse failed. Raw: {result.response[:1000]}")
 
         if not parsed.success:
             return {
-                "error": True,
+                "error": "JSON parsing failed",
                 "error_code": "PARSE_ERROR",
                 "error_message": f"JSON parsing failed: {parsed.errors}",
                 "raw_response": result.response[:500],

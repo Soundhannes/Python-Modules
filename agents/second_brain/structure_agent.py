@@ -34,7 +34,7 @@ class StructureAgent(ConfigurableAgent):
         Args:
             text: User-Eingabe
             intent: "create" oder "update"
-            category: Ziel-Kategorie (people, projects, ideas, tasks, events)
+            category: Ziel-Kategorie (people, projects, ideas, tasks, calendar_events)
             target: Bestehendes Objekt bei update {table, id, data}
 
         Returns:

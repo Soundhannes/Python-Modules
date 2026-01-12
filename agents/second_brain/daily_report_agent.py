@@ -35,7 +35,7 @@ class DailyReportAgent(ConfigurableAgent):
         today: str,
         open_tasks: List[Dict],
         overdue_tasks: List[Dict],
-        todays_events: List[Dict],
+        todays_calendar: List[Dict],
         recently_completed: List[Dict]
     ) -> Dict[str, Any]:
         """
@@ -45,7 +45,7 @@ class DailyReportAgent(ConfigurableAgent):
             today: Datum im Format YYYY-MM-DD
             open_tasks: [{id, title, due_date, priority, project_name, person_name, status}, ...]
             overdue_tasks: [{id, title, due_date, days_overdue}, ...]
-            todays_events: [{id, title, event_date, person_name}, ...]
+            todays_calendar: [{id, title, start_time, person_name}, ...]
             recently_completed: [{id, title, completed_at}, ...]
 
         Returns:
@@ -53,7 +53,7 @@ class DailyReportAgent(ConfigurableAgent):
                 top_3_tasks: [{id, title, why}, ...],
                 avoiding: {id, title, days_overdue, suggestion},
                 quick_win: {id, title, effort},
-                todays_events: [{title, time, person}, ...],
+                todays_calendar: [{title, time, person}, ...],
                 summary_text: str
             }
         """
@@ -61,7 +61,7 @@ class DailyReportAgent(ConfigurableAgent):
             today=today,
             open_tasks=open_tasks,
             overdue_tasks=overdue_tasks,
-            todays_events=todays_events,
+            todays_calendar=todays_calendar,
             recently_completed=recently_completed
         )
 
@@ -111,12 +111,12 @@ class DailyReportAgent(ConfigurableAgent):
         """)
 
         # Today's Events
-        todays_events = self.db.execute("""
-            SELECT e.id, e.title, e.event_date, p.name as person_name
-            FROM events e
+        todays_calendar = self.db.execute("""
+            SELECT e.id, e.title, e.start_time, p.name as person_name
+            FROM calendar_events e
             LEFT JOIN people p ON e.person_id = p.id
-            WHERE DATE(e.event_date) = CURRENT_DATE
-            ORDER BY e.event_date ASC
+            WHERE DATE(e.start_time) = CURRENT_DATE
+            ORDER BY e.start_time ASC
         """)
 
         # Recently Completed
@@ -132,7 +132,7 @@ class DailyReportAgent(ConfigurableAgent):
             today=today,
             open_tasks=[dict(r) for r in open_tasks] if open_tasks else [],
             overdue_tasks=[dict(r) for r in overdue_tasks] if overdue_tasks else [],
-            todays_events=[dict(r) for r in todays_events] if todays_events else [],
+            todays_calendar=[dict(r) for r in todays_calendar] if todays_calendar else [],
             recently_completed=[dict(r) for r in recently_completed] if recently_completed else []
         )
 
