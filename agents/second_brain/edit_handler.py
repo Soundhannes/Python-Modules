@@ -1,11 +1,13 @@
 """
-Edit-Handler für ! Änderungen.
+Edit-Handler fuer ! Aenderungen.
 
-Verarbeitet Änderungswünsche:
-- Status ändern (unkritisch → direkt ausführen)
-- Termine ändern (unkritisch → direkt ausführen)
-- Personendaten ändern (kritisch → Bestätigung)
-- Löschen (kritisch → Bestätigung)
+Verarbeitet Aenderungswuensche:
+- Status aendern (unkritisch -> direkt ausfuehren)
+- Termine aendern (unkritisch -> direkt ausfuehren)
+- Personendaten aendern (kritisch -> Bestaetigung)
+- Loeschen (kritisch -> Bestaetigung)
+
+Nutzt TextPreprocessor fuer deterministische Datums-Aufloesung.
 """
 
 import sys
@@ -17,15 +19,16 @@ from enum import Enum
 sys.path.insert(0, "/opt/python-modules")
 
 from .configurable_agent import ConfigurableAgent
+from ..services.text_preprocessor import get_text_preprocessor
 
 
 class EditType(Enum):
-    """Typ der Änderung."""
-    CRITICAL = "critical"      # Personendaten, Löschen → Bestätigung nötig
-    NORMAL = "normal"          # Status, Termine → Feedback nach Ausführung
+    """Typ der Aenderung."""
+    CRITICAL = "critical"      # Personendaten, Loeschen -> Bestaetigung noetig
+    NORMAL = "normal"          # Status, Termine -> Feedback nach Ausfuehrung
 
 
-# Erlaubte Tabellen für Edits
+# Erlaubte Tabellen fuer Edits
 ALLOWED_TABLES = ["people", "projects", "ideas", "tasks", "events", "calendar_events"]
 
 # Kritische Operationen
@@ -53,44 +56,50 @@ class EditResult:
 
 class EditHandler(ConfigurableAgent):
     """
-    Handler für ! Änderungen.
+    Handler fuer ! Aenderungen.
     
-    Interpretiert natürlichsprachliche Änderungswünsche
-    und führt sie aus (mit/ohne Bestätigung).
+    Interpretiert natuerlichsprachliche Aenderungswuensche
+    und fuehrt sie aus (mit/ohne Bestaetigung).
     """
 
     def __init__(self, db_connection):
         super().__init__("edit_agent", db_connection)
+        self.preprocessor = get_text_preprocessor()
 
     def handle(self, instruction: str, confirmed: bool = False, pending_action: Dict = None) -> EditResult:
         """
-        Verarbeitet einen Änderungswunsch.
+        Verarbeitet einen Aenderungswunsch.
         
         Args:
-            instruction: Der Änderungswunsch (ohne ! Prefix)
-            confirmed: True wenn User bereits bestätigt hat
-            pending_action: Die wartende Aktion bei Bestätigung
+            instruction: Der Aenderungswunsch (ohne ! Prefix)
+            confirmed: True wenn User bereits bestaetigt hat
+            pending_action: Die wartende Aktion bei Bestaetigung
             
         Returns:
-            EditResult mit Status und ggf. Bestätigungsfrage
+            EditResult mit Status und ggf. Bestaetigungsfrage
         """
         if not instruction.strip() and not pending_action:
             return EditResult(
                 success=False,
-                message="Bitte gib an, was geändert werden soll.",
+                message="Bitte gib an, was geaendert werden soll.",
                 error="empty_instruction"
             )
 
-        # Wenn bestätigt und pending_action vorhanden → ausführen
+        # Wenn bestaetigt und pending_action vorhanden -> ausfuehren
         if confirmed and pending_action:
             return self._execute_action(pending_action)
+
+        # Vorverarbeitung: Datum aufloesen
+        preprocess_result = self.preprocessor.preprocess(instruction)
+        resolved_date = preprocess_result.resolved_date or "null"
 
         # LLM fragen was zu tun ist
         try:
             llm_result = self.execute(
                 instruction=instruction,
                 tables=json.dumps(ALLOWED_TABLES),
-                today=self._get_today()
+                today=self._get_today(),
+                resolved_date=resolved_date
             )
 
             if llm_result.get("error"):
@@ -105,7 +114,7 @@ class EditHandler(ConfigurableAgent):
             if not action:
                 return EditResult(
                     success=False,
-                    message="Keine gültige Aktion erkannt.",
+                    message="Keine gueltige Aktion erkannt.",
                     error="no_action"
                 )
 
@@ -114,15 +123,15 @@ class EditHandler(ConfigurableAgent):
             if table not in ALLOWED_TABLES:
                 return EditResult(
                     success=False,
-                    message="Änderungen an dieser Tabelle nicht erlaubt.",
+                    message="Aenderungen an dieser Tabelle nicht erlaubt.",
                     error="forbidden_table"
                 )
 
-            # Prüfen ob kritisch
+            # Pruefen ob kritisch
             is_critical = self._is_critical(action)
 
             if is_critical and not confirmed:
-                # Bestätigung erfragen
+                # Bestaetigung erfragen
                 return EditResult(
                     success=True,
                     message="",
@@ -131,7 +140,7 @@ class EditHandler(ConfigurableAgent):
                     pending_action=action
                 )
             else:
-                # Direkt ausführen
+                # Direkt ausfuehren
                 return self._execute_action(action)
 
         except Exception as e:
@@ -142,12 +151,12 @@ class EditHandler(ConfigurableAgent):
             )
 
     def _is_critical(self, action: Dict) -> bool:
-        """Prüft ob die Aktion kritisch ist."""
+        """Prueft ob die Aktion kritisch ist."""
         operation = action.get("operation", "")
         table = action.get("table", "")
         field = action.get("field", "")
 
-        # Löschen ist immer kritisch
+        # Loeschen ist immer kritisch
         if operation == "delete":
             return True
 
@@ -158,24 +167,24 @@ class EditHandler(ConfigurableAgent):
         return False
 
     def _build_confirmation(self, action: Dict, llm_result: Dict) -> str:
-        """Baut die Bestätigungsfrage."""
+        """Baut die Bestaetigungsfrage."""
         operation = action.get("operation", "update")
         table = action.get("table", "")
         
         if operation == "delete":
             target = action.get("target_name", f"#{action.get('id', '?')}")
-            return f"Soll '{target}' aus {table} wirklich gelöscht werden?"
+            return f"Soll '{target}' aus {table} wirklich geloescht werden?"
         
         if table == "people":
             field = action.get("field", "")
             new_value = action.get("new_value", "")
             target = action.get("target_name", "diese Person")
-            return f"Soll {field} von '{target}' auf '{new_value}' geändert werden?"
+            return f"Soll {field} von '{target}' auf '{new_value}' geaendert werden?"
         
-        return llm_result.get("confirmation_question", "Diese Änderung durchführen?")
+        return llm_result.get("confirmation_question", "Diese Aenderung durchfuehren?")
 
     def _execute_action(self, action: Dict) -> EditResult:
-        """Führt die Aktion aus."""
+        """Fuehrt die Aktion aus."""
         operation = action.get("operation", "update")
         table = action.get("table")
         entity_id = action.get("id")
@@ -185,7 +194,7 @@ class EditHandler(ConfigurableAgent):
                 self.db.execute(f"UPDATE {table} SET deleted_at = NOW() WHERE id = %s AND deleted_at IS NULL", (entity_id,))
                 return EditResult(
                     success=True,
-                    message=f"Eintrag #{entity_id} aus {table} gelöscht."
+                    message=f"Eintrag #{entity_id} aus {table} geloescht."
                 )
 
             elif operation == "update":
@@ -199,7 +208,7 @@ class EditHandler(ConfigurableAgent):
                         error="missing_field_or_value"
                     )
 
-                # Update ausführen
+                # Update ausfuehren
                 self.db.execute(
                     f"UPDATE {table} SET {field} = %s, updated_at = NOW() WHERE id = %s",
                     (new_value, entity_id)
@@ -207,7 +216,7 @@ class EditHandler(ConfigurableAgent):
 
                 return EditResult(
                     success=True,
-                    message=f"{table.capitalize()} #{entity_id}: {field} wurde geändert."
+                    message=f"{table.capitalize()} #{entity_id}: {field} wurde geaendert."
                 )
 
             else:
@@ -220,16 +229,16 @@ class EditHandler(ConfigurableAgent):
         except Exception as e:
             return EditResult(
                 success=False,
-                message=f"Fehler beim Ausführen: {str(e)}",
+                message=f"Fehler beim Ausfuehren: {str(e)}",
                 error=str(e)
             )
 
     def _get_today(self) -> str:
-        """Gibt aktuelles Datum zurück."""
+        """Gibt aktuelles Datum zurueck."""
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d")
 
 
 def get_edit_handler(db_connection) -> EditHandler:
-    """Factory-Funktion für EditHandler."""
+    """Factory-Funktion fuer EditHandler."""
     return EditHandler(db_connection)

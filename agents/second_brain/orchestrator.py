@@ -460,6 +460,13 @@ class SecondBrainOrchestrator:
         insert_data["created_at"] = datetime.now()
         insert_data["updated_at"] = datetime.now()
 
+        # Calendar Events: Automatisch Second-Brain Kalender zuweisen
+        if table == "calendar_events" and "calendar_id" not in insert_data:
+            # Write-Calendar aus Config holen
+            write_cal = self.db.execute("SELECT write_calendar_id FROM sync_config LIMIT 1")
+            if write_cal and write_cal[0].get("write_calendar_id"):
+                insert_data["calendar_id"] = write_cal[0]["write_calendar_id"]
+
         columns = ", ".join(insert_data.keys())
         placeholders = ", ".join(["%s"] * len(insert_data))
 
