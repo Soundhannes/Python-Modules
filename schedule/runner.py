@@ -106,7 +106,7 @@ class SchedulerRunner:
                     hour, minute = time_of_day.hour, time_of_day.minute
                 else:
                     hour, minute = map(int, str(time_of_day).split(":")[:2])
-                return CronTrigger(hour=hour, minute=minute)
+                return CronTrigger(hour=hour, minute=minute, timezone="Europe/Berlin")
         
         elif schedule_type == "weekly":
             time_of_day = job_row.get("time_of_day")
@@ -116,7 +116,7 @@ class SchedulerRunner:
                     hour, minute = time_of_day.hour, time_of_day.minute
                 else:
                     hour, minute = map(int, str(time_of_day).split(":")[:2])
-                return CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute)
+                return CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute, timezone="Europe/Berlin")
         
         elif schedule_type == "monthly":
             time_of_day = job_row.get("time_of_day")
@@ -126,7 +126,7 @@ class SchedulerRunner:
                     hour, minute = time_of_day.hour, time_of_day.minute
                 else:
                     hour, minute = map(int, str(time_of_day).split(":")[:2])
-                return CronTrigger(day=day_of_month, hour=hour, minute=minute)
+                return CronTrigger(day=day_of_month, hour=hour, minute=minute, timezone="Europe/Berlin")
         
         return None
     
